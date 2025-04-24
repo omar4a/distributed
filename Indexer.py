@@ -4,10 +4,8 @@ import json
 import time
 from collections import defaultdict
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Indexer - %(levelname)s - %(message)s')
 
-# In-memory inverted index: word → set of URLs
 inverted_index = defaultdict(set)
 
 INDEX_FILE = "index.json"
