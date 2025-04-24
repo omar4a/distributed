@@ -1,6 +1,8 @@
 from mpi4py import MPI
 import time
 import logging
+import boto3
+import json
 
 # Import necessary libraries for web crawling (e.g., requests, beautifulsoup4, scrapy), parsing, etc.
 import requests
@@ -9,6 +11,59 @@ from urllib.parse import urljoin, urlparse
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Crawler - %(levelname)s - %(message)s')
+
+# Initialize queue
+sqs = boto3.resource('sqs', region_name = 'eu-north-1')
+toCrawl_queue = sqs.get_queue_by_name(QueueName = 'Queue1.fifo')
+crawled_Queue = sqs.get_queue_by_name(QueueName = 'crawled_URLs.fifo')
+
+logging.info(f"Connected to queue: {toCrawl_queue.url}")
+
+def send_task_to_queue(task_data, groupID, batch_size=500):
+    """
+    Sends a crawled URL to the SQS queue.
+    :param task_data: A dictionary with task details.
+    """
+
+    if not isinstance(task_data, list):
+        task_data = list(task_data)
+
+    for i in range(0, len(task_data), batch_size):
+        batch = task_data[i:i+batch_size]  # Slice the list into batches
+        message_body = json.dumps(batch)  # Serialize the batch as JSON
+        crawled_Queue.send_message(
+            MessageBody=message_body,
+            MessageGroupId="crawled_URLs",
+        )
+        logging.info(f"Sent batch of {len(batch)} URLs to SQS.")
+        # Send message to the queue
+
+    
+
+def fetch_task_from_queue():
+    """
+    Fetches a crawling task from the SQS queue.
+    :return: The task data (as a dictionary) or None if no messages are available.
+    """
+    messages = toCrawl_queue.receive_messages(
+        MaxNumberOfMessages=1,  # Fetch one message at a time
+        WaitTimeSeconds=10,     # Enable long polling to reduce empty responses
+        VisibilityTimeout=30    # Lock the message for processing (avoid duplicate work)
+    )
+
+    if messages:
+        message = messages[0]  # Get the first message
+        task_data = json.loads(message.body)  # Decode the JSON message body
+        
+        logging.info(f"Task received: {task_data}")
+        
+        # Delete the message from the queue after successful processing
+        message.delete()
+        logging.info("Message deleted from the queue")
+        return task_data
+    else:
+        logging.info("No tasks available in the queue")
+        return None
 
 
 def crawler_process():
@@ -24,15 +79,16 @@ def crawler_process():
 
     while True:
         status = MPI.Status()
-        url_to_crawl = comm.recv(source=0, tag=0, status=status)  # Receive URL from master (tag 0)
-        if not url_to_crawl:  # Could be a shutdown signal (if you implement one)
+        url = fetch_task_from_queue()
+        if not url:  # Could be a shutdown signal (if you implement one)
             logging.info(f"Crawler {rank} received shutdown signal. Exiting.")
             break
 
-        logging.info(f"Crawler {rank} received URL: {url_to_crawl}")
+        logging.info(f"Crawler {rank} received URL: {url}")
 
         try:
             # 1. Fetch the web page
+            url_to_crawl = url['url']
             response = requests.get(url_to_crawl, timeout=5)
             response.raise_for_status()
             html = response.text
@@ -61,7 +117,7 @@ def crawler_process():
             logging.info(f"Crawler {rank} crawled {url_to_crawl}, extracted {len(extracted_urls)} URLs.")
 
             # --- Send extracted URLs back to master ---
-            comm.send(extracted_urls, dest=0, tag=1)  # Tag 1 for sending extracted URLs
+            send_task_to_queue(extracted_urls, "crawled_URLs")
 
 
 
@@ -70,7 +126,7 @@ def crawler_process():
             # ---  Optionally send extracted content to indexer node (or queue for indexer) ---
             # indexer_rank = 1 + (rank - 1) % (size - 2) # Example: Send to indexer in round-robin (adjust indexer ranks accordingly)
             # comm.send(extracted_content, dest=indexer_rank, tag=2) # Tag 2 for sending content to indexer
-            comm.send(f"Crawler {rank} - Crawled URL: {url_to_crawl}", dest=0, tag=99)  # Send status update (tag 99)
+            # comm.send(f"Crawler {rank} - Crawled URL: {url_to_crawl}", dest=0, tag=99)  # Send status update (tag 99)
 
         except Exception as e:
 
