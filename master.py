@@ -26,6 +26,9 @@ def master_process():
     crawler_nodes = size - 2  # Assuming master and at least one indexer node
     indexer_nodes = 1  # At least one indexer node
 
+
+
+    ########################  uncomment if statement and remove the 2 lines under the if statement
     # if crawler_nodes <= 0 or indexer_nodes <= 0:
     #     logging.error(
     #         "Not enough nodes to run crawler and indexer. Need at least 3 nodes (1 master, 1 crawler, 1 indexer)")
@@ -33,6 +36,7 @@ def master_process():
     crawler_nodes = 1
     indexer_nodes = 0
 
+    ##################################
     active_crawler_nodes = list(range(1, 1 + crawler_nodes))  # Ranks for crawler nodes (assuming rank 0 is master)
     active_indexer_nodes = list(range(1 + crawler_nodes, size))  # Ranks for indexer nodes
 
