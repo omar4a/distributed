@@ -37,7 +37,7 @@ def search_index():
     while True:
         word = input("\nEnter a keyword to search (or type exit to quit): ").strip().lower()
         if word == "exit":
-            print("👋 Goodbye!")
+            print(" Goodbye!")
             break
         elif word:
             if word in inverted_index:
