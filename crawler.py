@@ -4,7 +4,7 @@ import logging
 import boto3
 import json
 
-# Import necessary libraries for web crawling (e.g., requests, beautifulsoup4, scrapy), parsing, etc.
+# Import necessary libraries for web crawling
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
@@ -108,11 +108,10 @@ def crawler_process():
                 script.decompose()
             text = soup.get_text(separator=' ', strip=True)
 
-            logging.info(f" Crawler {rank}: Extracted {len(extracted_urls)} URLs, {len(text)} characters of text.")
-            print(f" Crawler {rank} done. Found {len(extracted_urls)} links.")
+            logging.info(f"Crawler {rank}: Extracted {len(extracted_urls)} URLs, {len(text)} characters of text.")
+            print(f"Crawler {rank} done. Found {len(extracted_urls)} links.")
 
             time.sleep(2)  # Simulate crawling delay
-
 
             logging.info(f"Crawler {rank} crawled {url_to_crawl}, extracted {len(extracted_urls)} URLs.")
 
@@ -129,10 +128,8 @@ def crawler_process():
             # comm.send(f"Crawler {rank} - Crawled URL: {url_to_crawl}", dest=0, tag=99)  # Send status update (tag 99)
 
         except Exception as e:
-
             logging.error(f"Crawler {rank} error crawling {url_to_crawl}: {e}")
-            comm.send(f"Error crawling {url_to_crawl}: {e}", dest=0, tag=999)  # Report error to master (tag 999)
-
+            comm.send(f"Error crawling {url_to_crawl}: {e}", dest=0, tag=999)  # Report error to master
 
 if __name__ == '__main__':
     crawler_process()

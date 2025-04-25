@@ -55,10 +55,6 @@ def fetch_task_from_queue():
         return None
 
 def master_process():
-    """ 
-    Main process for the master node. 
-    Handles task distribution, worker management, and coordination. 
-    """
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
@@ -194,6 +190,13 @@ def master_process():
 
     #     print("Master Node Finished.")
 
+    # After finishing tasks, send shutdown signal to crawlers and indexers
+    for crawler_rank in active_crawler_nodes:
+        comm.send(None, dest=crawler_rank, tag=0)
+    for indexer_rank in active_indexer_nodes:
+        comm.send(None, dest=indexer_rank, tag=2)
+
+    logging.info("Master: All tasks completed. Shutdown signals sent.")
 
 if __name__ == '__main__':
     comm = MPI.COMM_WORLD
@@ -201,6 +204,9 @@ if __name__ == '__main__':
 
     if rank == 0:
         master_process()
-    else:
+    elif rank == 1:
         from crawler import crawler_process
         crawler_process()
+    elif rank == 2:
+        from indexer import indexer_process
+        indexer_process()
