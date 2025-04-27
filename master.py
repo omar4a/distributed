@@ -191,12 +191,12 @@ def master_process():
     #     print("Master Node Finished.")
 
     # After finishing tasks, send shutdown signal to crawlers and indexers
-    for crawler_rank in active_crawler_nodes:
-        comm.send(None, dest=crawler_rank, tag=0)
-    for indexer_rank in active_indexer_nodes:
-        comm.send(None, dest=indexer_rank, tag=2)
+    # for crawler_rank in active_crawler_nodes:
+    #     comm.send(None, dest=crawler_rank, tag=0)
+    # for indexer_rank in active_indexer_nodes:
+    #     comm.send(None, dest=indexer_rank, tag=2)
 
-    logging.info("Master: All tasks completed. Shutdown signals sent.")
+    # logging.info("Master: All tasks completed. Shutdown signals sent.")
 
 if __name__ == '__main__':
     comm = MPI.COMM_WORLD
