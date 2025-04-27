@@ -8,6 +8,9 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
+# to follow website Parsing Rules (Robot.txt)
+from urllib.robotparser import RobotFileParser
+from urllib.parse import urlparse
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Crawler - %(levelname)s - %(message)s')
@@ -18,6 +21,26 @@ toCrawl_queue = sqs.get_queue_by_name(QueueName = 'Queue1.fifo')
 crawled_Queue = sqs.get_queue_by_name(QueueName = 'crawled_URLs.fifo')
 
 logging.info(f"Connected to queue: {toCrawl_queue.url}")
+
+
+def is_allowed_by_robots(url):
+    """
+    Check if the given URL is allowed to be crawled based on robots.txt
+    """
+    parsed_url = urlparse(url)
+    robots_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
+
+    rp = RobotFileParser()
+    try:
+        rp.set_url(robots_url)
+        rp.read()  # Fetch robots.txt
+        return rp.can_fetch("*", url)  # "*" means our user-agent is any crawler
+    except Exception as e:
+        # If fetching robots.txt fails, we assume allowed
+        print(f"Failed to fetch robots.txt from {robots_url}: {e}")
+        return True
+
+
 
 def send_task_to_queue(task_data, groupID, batch_size=500):
     """
@@ -89,9 +112,19 @@ def crawler_process():
         try:
             # 1. Fetch the web page
             url_to_crawl = url['url']
-            response = requests.get(url_to_crawl, timeout=5)
-            response.raise_for_status()
-            html = response.text
+
+            # Follow the Robot.txt Rules of the website
+            if not is_allowed_by_robots(url_to_crawl):
+                logging.info(f"Crawler {rank}: Skipping {url_to_crawl} due to robots.txt rules.")
+                continue  # Skip forbidden URLs
+
+            try:
+                response = requests.get(url_to_crawl, timeout=5)
+                response.raise_for_status()
+                html = response.text
+            except requests.RequestException as e:
+                logging.error(f"Crawler {rank} failed fetching {url_to_crawl}: {e}")
+                continue  # If fetching failed, skip this URL and move to next
 
             # 2. Parse the HTML
             soup = BeautifulSoup(html, "html.parser")
