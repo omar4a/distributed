@@ -3,6 +3,7 @@ import logging
 import boto3
 import json
 import threading
+from queue import Queue
 
 # Configure logging 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Master - %(levelname)s - %(message)s')
@@ -11,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - Master - %(levelna
 sqs = boto3.resource('sqs', region_name = 'eu-north-1')
 toCrawl_queue = sqs.get_queue_by_name(QueueName = 'Queue1.fifo')
 crawled_Queue = sqs.get_queue_by_name(QueueName = 'crawled_URLs.fifo')
-urls_to_crawl_queue = []
+urls_to_crawl_queue = Queue()
 
 
 def send_task_to_queue(task_data, groupID):
@@ -55,8 +56,8 @@ def master_process():
 
     logging.info(f"Master node started")
 
-    seed_urls = ["http://example.com", "http://example.org"]
-    urls_to_crawl_queue = seed_urls  # Simple list as initial queue - replace with a distributed queue 
+    urls_to_crawl_queue.put("http://example.com")
+    urls_to_crawl_queue.put("http://example.org")
 
     def receive_crawled_urls():
         """
@@ -74,7 +75,8 @@ def master_process():
                     # Process and deserialize crawled URLs
                     try:
                         crawled_urls = json.loads(message.body)
-                        urls_to_crawl_queue.extend(crawled_urls)  # Add to local queue
+                        for url in crawled_urls:
+                            urls_to_crawl_queue.put(url)  # Add to local queue
                         logging.info(f"Added {len(crawled_urls)} URLs to URLs_To_Crawl queue")
                     except Exception as e:
                         logging.error(f"Error parsing crawled URLs: {e}")
@@ -94,8 +96,8 @@ def master_process():
         crawler_tasks_assigned = 0
         
         while True:
-            if urls_to_crawl_queue:
-                url_to_crawl = urls_to_crawl_queue.pop(0)  # Get URL (FIFO)
+            if urls_to_crawl_queue.qsize():
+                url_to_crawl = urls_to_crawl_queue.get()  # Get URL (FIFO)
                 
                 # Assign URL to the queue for crawlers
                 toCrawl_queue.send_message(
@@ -104,7 +106,7 @@ def master_process():
                 )
                 
                 crawler_tasks_assigned += 1
-                logging.info(f"Assigned URL to crawler. Task count: {task_count}, URLs remaining: {len(urls_to_crawl_queue)}")
+                logging.info(f"Assigned URL to crawler. Task count: {task_count}, URLs remaining: {urls_to_crawl_queue.qsize()}")
             
             time.sleep(0.1)  # Adjust based on performance needs
 
@@ -114,7 +116,6 @@ def master_process():
     # Start threads
     receive_thread.start()
     assign_thread.start()
-
 
 if __name__ == '__main__':
 
