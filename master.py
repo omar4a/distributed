@@ -1,4 +1,3 @@
-from mpi4py import MPI
 import time
 import logging
 import boto3
@@ -53,24 +52,8 @@ def fetch_task_from_queue():
         return None
 
 def master_process():
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-    status = MPI.Status()
 
-    logging.info(f"Master node started with rank {rank} of {size}")
-
-    crawler_nodes = size - 2  # Assuming master and at least one indexer node
-    indexer_nodes = 1  # At least one indexer node
-
-    crawler_nodes = 1
-    indexer_nodes = 0
-
-    active_crawler_nodes = list(range(1, 1 + crawler_nodes))  # Ranks for crawler nodes (assuming rank 0 is master)
-    active_indexer_nodes = list(range(1 + crawler_nodes, size))  # Ranks for indexer nodes
-
-    logging.info(f"Active Crawler Nodes: {active_crawler_nodes}")
-    logging.info(f"Active Indexer Nodes: {active_indexer_nodes}")
+    logging.info(f"Master node started")
 
     seed_urls = ["http://example.com", "http://example.org"]
     urls_to_crawl_queue = seed_urls  # Simple list as initial queue - replace with a distributed queue 
@@ -134,8 +117,6 @@ def master_process():
 
 
 if __name__ == '__main__':
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
 
     master_process()
 
