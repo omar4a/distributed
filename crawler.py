@@ -7,10 +7,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-<<<<<<< Updated upstream
-=======
 from urllib.robotparser import RobotFileParser
->>>>>>> Stashed changes
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Crawler - %(levelname)s - %(message)s')
@@ -26,8 +23,6 @@ from urllib.parse import quote_plus
 
 logging.info(f"Connected to queue: {toCrawl_queue.url}")
 
-<<<<<<< Updated upstream
-=======
 
 def save_to_s3(url, html, text):
     """
@@ -62,7 +57,6 @@ def is_allowed_by_robots(url):
         return True
 
 
->>>>>>> Stashed changes
 def send_task_to_queue(task_data, groupID, batch_size=500):
     if not isinstance(task_data, list):
         task_data = list(task_data)
@@ -117,11 +111,6 @@ def crawler_process():
 
         try:
             url_to_crawl = url['url']
-<<<<<<< Updated upstream
-            response = requests.get(url_to_crawl, timeout=5)
-            response.raise_for_status()
-            html = response.text
-=======
 
             if not is_allowed_by_robots(url_to_crawl):
                 logging.info(f"Crawler {rank}: Skipping {url_to_crawl} due to robots.txt rules.")
@@ -139,7 +128,6 @@ def crawler_process():
                 error_count += 1
                 total_urls_processed += 1
                 continue
->>>>>>> Stashed changes
 
             soup = BeautifulSoup(html, "html.parser")
 
