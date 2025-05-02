@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - Crawler - %(leveln
 sqs = boto3.resource('sqs', region_name='eu-north-1')
 toCrawl_queue = sqs.get_queue_by_name(QueueName='Queue1.fifo')
 crawled_Queue = sqs.get_queue_by_name(QueueName='crawled_URLs.fifo')
+content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo') 
 
 # saving crawled
 import hashlib
@@ -90,6 +91,16 @@ def fetch_task_from_queue():
         return None
 
 
+def send_content_to_indexer(content):
+    try:
+        content_queue.send_message(
+            MessageBody=json.dumps(content),
+            MessageGroupId="crawled_content"
+        )
+        logging.info(f"Sent content for indexing: {content.get('url')}")
+    except Exception as e:
+        logging.error(f"Failed to send content to indexer: {e}")
+
 def crawler_process():
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
@@ -154,6 +165,14 @@ def crawler_process():
             send_task_to_queue(extracted_urls, "crawled_URLs")
 
             total_urls_processed += 1
+
+            message = {
+                "url": url_to_crawl,
+                "html": html,
+                "title": soup.title.string if soup.title else url_to_crawl
+            }
+            send_content_to_indexer(message)
+
 
         except Exception as e:
             logging.error(f"Crawler {rank} error crawling {url_to_crawl}: {e}")

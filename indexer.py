@@ -2,90 +2,111 @@ from mpi4py import MPI
 import logging
 import json
 import time
-from collections import defaultdict
+import boto3
+import os
+from whoosh.index import create_in, open_dir
+from whoosh.fields import Schema, TEXT, ID
+from whoosh.qparser import MultifieldParser, OrGroup
+from bs4 import BeautifulSoup
 
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Indexer - %(levelname)s - %(message)s')
 
-inverted_index = defaultdict(set)
+# AWS SQS Setup
+sqs = boto3.resource('sqs', region_name='eu-north-1')
+content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo')
 
-INDEX_FILE = "index.json"
+# Whoosh index setup
+INDEX_DIR = "whoosh_index"
 
-def process_text(text, source_url):
-    words = text.lower().split()
-    for word in words:
-        if word.isalpha():
-            inverted_index[word].add(source_url)
+schema = Schema(title=TEXT(stored=True), url=ID(stored=True, unique=True), content=TEXT)
 
-def save_index_to_file():
-    with open(INDEX_FILE, "w") as f:
-        json.dump({k: list(v) for k, v in inverted_index.items()}, f, indent=2)
+if not os.path.exists(INDEX_DIR):
+    os.mkdir(INDEX_DIR)
+    ix = create_in(INDEX_DIR, schema)
+else:
+    ix = open_dir(INDEX_DIR)
 
-def load_index_from_file():
-    try:
-        with open(INDEX_FILE, "r") as f:
-            data = json.load(f)
-            for word, urls in data.items():
-                inverted_index[word] = set(urls)
-    except FileNotFoundError:
-        pass
+def clean_text(html):
+    soup = BeautifulSoup(html, "html.parser")
+    for script in soup(["script", "style"]):
+        script.decompose()
+    return soup.get_text(separator=" ", strip=True)
 
-def search_index():
-    if not inverted_index:
-        print(" Index is empty. Run crawler and indexer first.")
+def index_content(data):
+    url = data.get("url")
+    raw_html = data.get("html")
+    title = data.get("title", url)
+
+    if not url or not raw_html:
+        logging.warning("Incomplete data received. Skipping.")
         return
 
+    text = clean_text(raw_html)
+
+    writer = ix.writer()
+    writer.update_document(title=title, url=url, content=text)
+    writer.commit()
+
+    logging.info(f"Indexed: {url} ({len(text)} chars)")
+
+def search_index():
+    print("\n Welcome to the search engine (Boolean operators supported)")
+    print("   Example: google AND example")
+    print("   Example: python AND NOT example")
+    print("   Example: python OR example")
+    print("   Use quotes for exact phrases: \"data science\"")
+
     while True:
-        word = input("\nEnter a keyword to search (or type exit to quit): ").strip().lower()
-        if word == "exit":
-            print(" Goodbye!")
+        term = input("\n🔍 Enter a search query (or 'exit'): ").strip()
+        if term.lower() == "exit":
             break
-        elif word:
-            if word in inverted_index:
-                print(f" Found '{word}' in {len(inverted_index[word])} URL(s):")
-                for url in inverted_index[word]:
-                    print(f"  - {url}")
+
+        qp = MultifieldParser(["title", "content"], schema=ix.schema, group=OrGroup.factory(0.9))
+        try:
+            q = qp.parse(term)
+        except Exception as e:
+            print(f"Invalid query: {e}")
+            continue
+
+        with ix.searcher() as searcher:
+            results = searcher.search(q, limit=10)
+            if results:
+                print(f"\n Found {len(results)} result(s):")
+                for r in results:
+                    print(f"- {r['title']} ({r['url']})")
             else:
-                print(f"🔍 Keyword '{word}' not found in the index.")
+                print("No results found.")
 
 def indexer_process():
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-
-    logging.info(f"Indexer node started with rank {rank} of {size}")
-    load_index_from_file()
+    logging.info("Indexer started. Listening for content to index...")
 
     while True:
-        status = MPI.Status()
-        content_to_index = comm.recv(source=MPI.ANY_SOURCE, tag=2, status=status)
-        source_rank = status.Get_source()
+        messages = content_queue.receive_messages(
+            MaxNumberOfMessages=5,
+            WaitTimeSeconds=10,
+            VisibilityTimeout=20
+        )
 
-        if not content_to_index:
-            logging.info(f"Indexer {rank} received shutdown signal. Exiting.")
-            save_index_to_file()
-            break
+        if not messages:
+            continue
 
-        try:
-            source_url = content_to_index.get("url")
-            text = content_to_index.get("text")
+        for msg in messages:
+            try:
+                content_data = json.loads(msg.body)
+                if isinstance(content_data, list):
+                    for item in content_data:
+                        index_content(item)
+                else:
+                    index_content(content_data)
 
-            if source_url and text:
-                logging.info(f"Indexer {rank} indexing content from {source_url}")
-                process_text(text, source_url)
-                save_index_to_file()
-                logging.info(f"Indexer {rank} saved index.json successfully.")
-                comm.send(f"Indexer {rank} - Indexed content from {source_url}", dest=0, tag=99)
-            else:
-                logging.warning("Indexer received incomplete data")
-
-        except Exception as e:
-            logging.error(f"Indexer {rank} error indexing content: {e}")
-            comm.send(f"Indexer {rank} - Error indexing: {e}", dest=0, tag=999)
+                msg.delete()
+            except Exception as e:
+                logging.error(f"Failed to process message: {e}")
 
 if __name__ == '__main__':
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "search":
-        load_index_from_file()
         search_index()
     else:
         indexer_process()
