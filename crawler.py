@@ -122,6 +122,8 @@ def crawler_process():
 
         try:
             url_to_crawl = url['url']
+            current_depth = url.get('current_depth', 0)
+            max_depth = url.get('max_depth', 0)
 
             if not is_allowed_by_robots(url_to_crawl):
                 logging.info(f"Crawler {rank}: Skipping {url_to_crawl} due to robots.txt rules.")
@@ -162,7 +164,19 @@ def crawler_process():
             time.sleep(2)  # Simulate delay
 
             logging.info(f"Crawler {rank} crawled {url_to_crawl}, extracted {len(extracted_urls)} URLs.")
-            send_task_to_queue(extracted_urls, "crawled_URLs")
+
+            if current_depth < max_depth:
+                # Create a new task for each extracted URL with incremented depth.
+                new_tasks = [{"url": link, "current_depth": current_depth + 1, "max_depth": max_depth} for link in extracted_urls]
+                send_task_to_queue(new_tasks, "crawled_URLs")
+            else:
+                logging.info(f"Crawler {rank}: Reached max depth for {url_to_crawl}. Not sending further URL tasks.")
+                # After finishing all tasks, send a "done" message.
+                sqs_resource = boto3.resource('sqs', region_name='eu-north-1')
+                crawler_done_queue = sqs_resource.get_queue_by_name(QueueName='crawler_completion.fifo')
+                done_message = {"status": "done", "crawler": MPI.COMM_WORLD.Get_rank()}
+                crawler_done_queue.send_message(MessageBody=json.dumps(done_message), MessageGroupId="crawler_done")
+                logging.info(f"Crawler {MPI.COMM_WORLD.Get_rank()} finished processing and sent done message.")
 
             total_urls_processed += 1
 

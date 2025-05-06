@@ -51,13 +51,90 @@ def fetch_task_from_queue():
     else:
         logging.info("No tasks available in the queue")
         return None
+    
+def send_search_query(query):
+    search_query_queue = sqs.get_queue_by_name(QueueName='search_query.fifo')
+    message = {"query": query}
+    search_query_queue.send_message(MessageBody=json.dumps(message), MessageGroupId="search_queries")
+    logging.info("Sent search query to indexers.")
+    
+def wait_for_indexing_completion():
+    index_completion_queue = sqs.get_queue_by_name(QueueName='index_completion.fifo')
+    while True:
+        messages = index_completion_queue.receive_messages(MaxNumberOfMessages=1, WaitTimeSeconds=10)
+        if messages:
+            message = messages[0]
+            data = json.loads(message.body)
+            if data.get("status") == "finished":
+                logging.info(f"Indexer finished. Global index available at: {data.get('location')}")
+                message.delete()
+                break
+        time.sleep(1)
+    prompt_and_delegate_search()
+
+def prompt_and_delegate_search():
+    # Prompt user for a search query.
+    search_query = input("Enter a search query (use quotes for phrases and AND/OR for binary operators):\n")
+    send_search_query(search_query)
+    poll_for_search_results()
+
+def send_search_query(query):
+    search_query_queue = sqs.get_queue_by_name(QueueName='search_query.fifo')
+    message = {"query": query}
+    search_query_queue.send_message(MessageBody=json.dumps(message), MessageGroupId="search_queries")
+    logging.info("Sent search query to indexers.")
+
+def poll_for_search_results():
+    search_results_queue = sqs.get_queue_by_name(QueueName='search_results.fifo')
+    logging.info("Polling for search results...")
+    # Example: poll for a limited time
+    timeout = 30  
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        messages = search_results_queue.receive_messages(MaxNumberOfMessages=1, WaitTimeSeconds=10)
+        if messages:
+            msg = messages[0]
+            results = json.loads(msg.body)
+            logging.info(f"Search Results: {results}")
+            print("Search Results:")
+            if "error" in results:
+                print(results["error"])
+            else:
+                for line in results.get("results", []):
+                    print(line)
+            msg.delete()
+            break  # Or continue polling if you expect multiple messages
+        else:
+            time.sleep(1)
+    else:
+        logging.info("No search results received within timeout.")
 
 def master_process():
 
     logging.info(f"Master node started")
+    
+    # Prompt for seed URLs (enter 1 to 5 URLs, comma-separated)
+    seed_input = input("Enter 1-5 seed URLs separated by commas (include http(s)://):\n")
+    seeds = [u.strip() for u in seed_input.split(",") if u.strip()]
+    if not (1 <= len(seeds) <= 5):
+        logging.error("You must provide between 1 and 5 seed URLs.")
+        exit(1)
 
-    urls_to_crawl_queue.put("http://example.com")
-    urls_to_crawl_queue.put("http://example.org")
+    # Prompt for DEPTH (an integer between 0 and 20)
+    try:
+        depth = int(input("Enter the crawl depth (0-20):\n"))
+        if not (0 <= depth <= 20):
+            raise ValueError
+    except ValueError:
+        logging.error("Depth must be an integer between 0 and 20.")
+        exit(1)
+
+    # Place each seed URL in the local queue with additional depth information.
+    for seed in seeds:
+        # Each task now is a dictionary with the seed URL,
+        # the current depth (0 initially), and the maximum depth (as provided)
+        seed_task = {"url": seed, "current_depth": 0, "max_depth": depth}
+        urls_to_crawl_queue.put(seed_task)
 
     def receive_crawled_urls():
         """
@@ -99,11 +176,10 @@ def master_process():
             if urls_to_crawl_queue.qsize():
                 url_to_crawl = urls_to_crawl_queue.get()  # Get URL (FIFO)
                 
-                # Assign URL to the queue for crawlers
                 toCrawl_queue.send_message(
-                    MessageBody=json.dumps({"url": url_to_crawl}),
-                    MessageGroupId="urls_to_crawl",  # Group ID for tasks
-                )
+                    MessageBody=json.dumps(url_to_crawl),
+                    MessageGroupId="urls_to_crawl",
+                    )
                 
                 crawler_tasks_assigned += 1
                 logging.info(f"Assigned URL to crawler. Task count: {task_count}, URLs remaining: {urls_to_crawl_queue.qsize()}")
@@ -112,10 +188,12 @@ def master_process():
 
     receive_thread = threading.Thread(target=receive_crawled_urls, args=())
     assign_thread = threading.Thread(target=assign_urls_to_crawlers, args=())
+    index_thread = threading.Thread(target=wait_for_indexing_completion, args=())
 
     # Start threads
     receive_thread.start()
     assign_thread.start()
+    index_thread.start()
 
 if __name__ == '__main__':
 
