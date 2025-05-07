@@ -3,6 +3,7 @@ import logging
 import boto3
 import json
 import threading
+import uuid
 from queue import Queue
 
 # Configure logging 
@@ -52,11 +53,30 @@ def fetch_task_from_queue():
         logging.info("No tasks available in the queue")
         return None
     
+
+def prompt_and_delegate_search():
+    """
+    Continuously prompt for search queries, send them to the indexer, 
+    and display the returned results. The session ends when the user inputs '/.quit'.
+    """
+    while True:
+        search_query = input("Enter a search query (or '/.quit' to exit):\n").strip()
+        if search_query == "/.quit":
+            logging.info("Exiting search session.")
+            send_search_query(search_query)  # Notify indexer to terminate
+            break
+        
+        send_search_query(search_query)
+        poll_for_search_results()
+
 def send_search_query(query):
+    """
+    Sends the user’s search query to the indexer via SQS.
+    """
     search_query_queue = sqs.get_queue_by_name(QueueName='search_query.fifo')
     message = {"query": query}
-    search_query_queue.send_message(MessageBody=json.dumps(message), MessageGroupId="search_queries")
-    logging.info("Sent search query to indexers.")
+    search_query_queue.send_message(MessageBody=json.dumps(message), MessageGroupId=str(uuid.uuid4()))
+    logging.info(f"Sent search query to indexers: {query}")
     
 def wait_for_indexing_completion():
     index_completion_queue = sqs.get_queue_by_name(QueueName='index_completion.fifo')
@@ -71,18 +91,6 @@ def wait_for_indexing_completion():
                 break
         time.sleep(1)
     prompt_and_delegate_search()
-
-def prompt_and_delegate_search():
-    # Prompt user for a search query.
-    search_query = input("Enter a search query (use quotes for phrases and AND/OR for binary operators):\n")
-    send_search_query(search_query)
-    poll_for_search_results()
-
-def send_search_query(query):
-    search_query_queue = sqs.get_queue_by_name(QueueName='search_query.fifo')
-    message = {"query": query}
-    search_query_queue.send_message(MessageBody=json.dumps(message), MessageGroupId="search_queries")
-    logging.info("Sent search query to indexers.")
 
 def poll_for_search_results():
     search_results_queue = sqs.get_queue_by_name(QueueName='search_results.fifo')
@@ -178,7 +186,7 @@ def master_process():
                 
                 toCrawl_queue.send_message(
                     MessageBody=json.dumps(url_to_crawl),
-                    MessageGroupId="urls_to_crawl",
+                    MessageGroupId=str(uuid.uuid4()),
                     )
                 
                 crawler_tasks_assigned += 1

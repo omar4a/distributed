@@ -1,8 +1,8 @@
-from mpi4py import MPI
 import time
 import logging
 import boto3
 import json
+import uuid
 
 import requests
 from bs4 import BeautifulSoup
@@ -67,7 +67,7 @@ def send_task_to_queue(task_data, groupID, batch_size=500):
         message_body = json.dumps(batch)
         crawled_Queue.send_message(
             MessageBody=message_body,
-            MessageGroupId="crawled_URLs",
+            MessageGroupId=str(uuid.uuid4()),
         )
         logging.info(f"Sent batch of {len(batch)} URLs to SQS.")
 
@@ -95,18 +95,16 @@ def send_content_to_indexer(content):
     try:
         content_queue.send_message(
             MessageBody=json.dumps(content),
-            MessageGroupId="crawled_content"
+            MessageGroupId=str(uuid.uuid4())
         )
         logging.info(f"Sent content for indexing: {content.get('url')}")
     except Exception as e:
         logging.error(f"Failed to send content to indexer: {e}")
 
 def crawler_process():
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
 
-    logging.info(f"Crawler node started with rank {rank} of {size}")
+
+    logging.info(f"Crawler node started")
 
     total_urls_processed = 0
     error_count = 0
@@ -115,10 +113,10 @@ def crawler_process():
     while True:
         url = fetch_task_from_queue()
         if not url:
-            logging.info(f"Crawler {rank} received shutdown signal or no task. Exiting.")
+            logging.info(f"Crawler received shutdown signal or no task. Exiting.")
             break
 
-        logging.info(f"Crawler {rank} received URL: {url}")
+        logging.info(f"Crawler received URL: {url}")
 
         try:
             url_to_crawl = url['url']
@@ -126,7 +124,7 @@ def crawler_process():
             max_depth = url.get('max_depth', 0)
 
             if not is_allowed_by_robots(url_to_crawl):
-                logging.info(f"Crawler {rank}: Skipping {url_to_crawl} due to robots.txt rules.")
+                logging.info(f"Crawler: Skipping {url_to_crawl} due to robots.txt rules.")
                 skipped_due_to_robots += 1
                 total_urls_processed += 1
                 # comm.send(f"Skipped (robots.txt): {url_to_crawl}", dest=0, tag=98)
@@ -137,7 +135,7 @@ def crawler_process():
                 response.raise_for_status()
                 html = response.text
             except requests.RequestException as e:
-                logging.error(f"Crawler {rank} failed fetching {url_to_crawl}: {e}")
+                logging.error(f"Crawler failed fetching {url_to_crawl}: {e}")
                 error_count += 1
                 total_urls_processed += 1
                 continue
@@ -158,25 +156,25 @@ def crawler_process():
             # Save to S3 for persistence
             save_to_s3(url_to_crawl, html, text)
 
-            logging.info(f"Crawler {rank}: Extracted {len(extracted_urls)} URLs, {len(text)} characters of text.")
-            print(f"Crawler {rank} done. Found {len(extracted_urls)} links.")
+            logging.info(f"Crawler: Extracted {len(extracted_urls)} URLs, {len(text)} characters of text.")
+            print(f"Crawler done. Found {len(extracted_urls)} links.")
 
             time.sleep(2)  # Simulate delay
 
-            logging.info(f"Crawler {rank} crawled {url_to_crawl}, extracted {len(extracted_urls)} URLs.")
+            logging.info(f"Crawler crawled {url_to_crawl}, extracted {len(extracted_urls)} URLs.")
 
             if current_depth < max_depth:
                 # Create a new task for each extracted URL with incremented depth.
                 new_tasks = [{"url": link, "current_depth": current_depth + 1, "max_depth": max_depth} for link in extracted_urls]
                 send_task_to_queue(new_tasks, "crawled_URLs")
             else:
-                logging.info(f"Crawler {rank}: Reached max depth for {url_to_crawl}. Not sending further URL tasks.")
+                logging.info(f"Crawler: Reached max depth for {url_to_crawl}. Not sending further URL tasks.")
                 # After finishing all tasks, send a "done" message.
                 sqs_resource = boto3.resource('sqs', region_name='eu-north-1')
                 crawler_done_queue = sqs_resource.get_queue_by_name(QueueName='crawler_completion.fifo')
-                done_message = {"status": "done", "crawler": MPI.COMM_WORLD.Get_rank()}
-                crawler_done_queue.send_message(MessageBody=json.dumps(done_message), MessageGroupId="crawler_done")
-                logging.info(f"Crawler {MPI.COMM_WORLD.Get_rank()} finished processing and sent done message.")
+                done_message = {"status": "done"}
+                crawler_done_queue.send_message(MessageBody=json.dumps(done_message), MessageGroupId=str(uuid.uuid4()))
+                logging.info(f"Crawler finished processing and sent done message.")
 
             total_urls_processed += 1
 
@@ -189,7 +187,7 @@ def crawler_process():
 
 
         except Exception as e:
-            logging.error(f"Crawler {rank} error crawling {url_to_crawl}: {e}")
+            logging.error(f"Crawler error crawling {url_to_crawl}: {e}")
             error_count += 1
             total_urls_processed += 1
             # comm.send(f"Error crawling {url_to_crawl}: {e}", dest=0, tag=999)
@@ -197,7 +195,7 @@ def crawler_process():
     # Final summary
     error_percentage = (error_count / total_urls_processed) * 100 if total_urls_processed else 0
     summary_message = (
-        f"Crawler {rank} finished. "
+        f"Crawler finished. "
         f"Processed: {total_urls_processed}, "
         f"Errors: {error_count} ({error_percentage:.2f}%), "
         f"Skipped (robots.txt): {skipped_due_to_robots}"
