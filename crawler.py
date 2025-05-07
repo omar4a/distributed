@@ -1,8 +1,9 @@
-from mpi4py import MPI
 import time
 import logging
 import boto3
 import json
+import uuid
+
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
@@ -11,49 +12,65 @@ from urllib.robotparser import RobotFileParser
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Crawler - %(levelname)s - %(message)s')
 
-# Initialize SQS
+# Initialize SQS queues
 sqs = boto3.resource('sqs', region_name='eu-north-1')
 toCrawl_queue = sqs.get_queue_by_name(QueueName='Queue1.fifo')
 crawled_Queue = sqs.get_queue_by_name(QueueName='crawled_URLs.fifo')
-content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo')
+content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo') 
+
+# saving crawled
+import hashlib
+from urllib.parse import quote_plus
 
 logging.info(f"Connected to queue: {toCrawl_queue.url}")
 
-MAX_PAGES = 10
+
+def save_to_s3(url, html, text):
+    """
+    Saves crawled HTML and extracted text to S3.
+    """
+    bucket_name = 'crawled-content-team29'
+    s3 = boto3.client('s3', region_name='eu-north-1')
+
+    # Generate a safe file name by hashing the URL
+    safe_url = quote_plus(url)  # Encodes unsafe characters into URL-safe form
+    base_key = f"{safe_url}/"
+
+    try:
+        s3.put_object(Bucket=bucket_name, Key=base_key + "raw.html", Body=html, ContentType='text/html')
+        s3.put_object(Bucket=bucket_name, Key=base_key + "content.txt", Body=text, ContentType='text/plain')
+        logging.info(f"Saved crawled content for {url} to S3 bucket {bucket_name}")
+    except Exception as e:
+        logging.error(f"Failed to save {url} to S3: {e}")
+
 
 def is_allowed_by_robots(url):
     parsed_url = urlparse(url)
     robots_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
+
     rp = RobotFileParser()
     try:
         rp.set_url(robots_url)
         rp.read()
         return rp.can_fetch("*", url)
     except Exception as e:
-        print(f"Failed to fetch robots.txt from {robots_url}: {e}")
+        logging.warning(f"Failed to fetch robots.txt from {robots_url}: {e}")
         return True
 
-def send_urls_to_queue(task_data, groupID, batch_size=500):
+
+def send_task_to_queue(task_data, groupID, batch_size=500):
     if not isinstance(task_data, list):
         task_data = list(task_data)
+
     for i in range(0, len(task_data), batch_size):
-        batch = task_data[i:i+batch_size]
+        batch = task_data[i:i + batch_size]
         message_body = json.dumps(batch)
         crawled_Queue.send_message(
             MessageBody=message_body,
-            MessageGroupId=groupID,
+            MessageGroupId=str(uuid.uuid4()),
         )
         logging.info(f"Sent batch of {len(batch)} URLs to SQS.")
 
-def send_content_to_indexer(content):
-    try:
-        content_queue.send_message(
-            MessageBody=json.dumps(content),
-            MessageGroupId="crawled_content"
-        )
-        logging.info(f"Sent content for indexing: {content.get('url')}")
-    except Exception as e:
-        logging.error(f"Failed to send content to indexer: {e}")
 
 def fetch_task_from_queue():
     messages = toCrawl_queue.receive_messages(
@@ -61,6 +78,7 @@ def fetch_task_from_queue():
         WaitTimeSeconds=10,
         VisibilityTimeout=30
     )
+
     if messages:
         message = messages[0]
         task_data = json.loads(message.body)
@@ -72,29 +90,54 @@ def fetch_task_from_queue():
         logging.info("No tasks available in the queue")
         return None
 
+
+def send_content_to_indexer(content):
+    try:
+        content_queue.send_message(
+            MessageBody=json.dumps(content),
+            MessageGroupId=str(uuid.uuid4())
+        )
+        logging.info(f"Sent content for indexing: {content.get('url')}")
+    except Exception as e:
+        logging.error(f"Failed to send content to indexer: {e}")
+
 def crawler_process():
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-    logging.info(f"Crawler node started with rank {rank} of {size}")
 
-    pages_crawled = 0
+    logging.info(f"Crawler node started.")
 
-    while pages_crawled < MAX_PAGES:
+    total_urls_processed = 0
+    error_count = 0
+    skipped_due_to_robots = 0
+
+    while True:
         url = fetch_task_from_queue()
         if not url:
-            logging.info(f"Crawler {rank} received shutdown signal or no URL. Exiting.")
+            logging.info(f"Crawler received shutdown signal or no task. Exiting.")
             break
+
+        logging.info(f"Crawler received URL: {url}")
 
         try:
             url_to_crawl = url['url']
+            current_depth = url.get('current_depth', 0)
+            max_depth = url.get('max_depth', 0)
+
             if not is_allowed_by_robots(url_to_crawl):
-                logging.info(f"Crawler {rank}: Skipping {url_to_crawl} due to robots.txt rules.")
+                logging.info(f"Crawler: Skipping {url_to_crawl} due to robots.txt rules.")
+                skipped_due_to_robots += 1
+                total_urls_processed += 1
                 continue
 
-            response = requests.get(url_to_crawl, timeout=5)
-            response.raise_for_status()
-            html = response.text
+            try:
+                response = requests.get(url_to_crawl, timeout=5)
+                response.raise_for_status()
+                html = response.text
+            except requests.RequestException as e:
+                logging.error(f"Crawler failed fetching {url_to_crawl}: {e}")
+                error_count += 1
+                total_urls_processed += 1
+                continue
+
             soup = BeautifulSoup(html, "html.parser")
 
             extracted_urls = set()
@@ -105,13 +148,31 @@ def crawler_process():
 
             for script in soup(["script", "style"]):
                 script.decompose()
+
             text = soup.get_text(separator=' ', strip=True)
 
-            logging.info(f"Crawler {rank}: Extracted {len(extracted_urls)} URLs, {len(text)} characters of text.")
-            print(f"Crawler {rank} done. Found {len(extracted_urls)} links.")
+            # Save to S3 for persistence
+            save_to_s3(url_to_crawl, html, text)
 
-            time.sleep(2)
-            send_urls_to_queue(extracted_urls, "crawled_URLs")
+            logging.info(f"Crawler Extracted {len(extracted_urls)} URLs, {len(text)} characters of text.")
+            print(f"Crawler done. Found {len(extracted_urls)} links.")
+
+            logging.info(f"Crawler crawled {url_to_crawl}, extracted {len(extracted_urls)} URLs.")
+
+            if current_depth < max_depth:
+                # Create a new task for each extracted URL with incremented depth.
+                new_tasks = [{"url": link, "current_depth": current_depth + 1, "max_depth": max_depth} for link in extracted_urls]
+                send_task_to_queue(new_tasks, "crawled_URLs")
+            else:
+                logging.info(f"Crawler Reached max depth for {url_to_crawl}. Not sending further URL tasks.")
+                # After finishing all tasks, send a "done" message.
+                sqs_resource = boto3.resource('sqs', region_name='eu-north-1')
+                crawler_done_queue = sqs_resource.get_queue_by_name(QueueName='crawler_completion.fifo')
+                done_message = {"status": "done"}
+                crawler_done_queue.send_message(MessageBody=json.dumps(done_message), MessageGroupId=str( uuid.uuid4()))
+                logging.info(f"Crawler finished processing and sent done message.")
+
+            total_urls_processed += 1
 
             message = {
                 "url": url_to_crawl,
@@ -120,13 +181,24 @@ def crawler_process():
             }
             send_content_to_indexer(message)
 
-            pages_crawled += 1
 
         except Exception as e:
-            logging.error(f"Crawler {rank} error crawling {url_to_crawl}: {e}")
-            comm.send(f"Error crawling {url_to_crawl}: {e}", dest=0, tag=999)
+            logging.error(f"Crawler error crawling {url_to_crawl}: {e}")
+            error_count += 1
+            total_urls_processed += 1
+            # comm.send(f"Error crawling {url_to_crawl}: {e}", dest=0, tag=999)
 
-    logging.info(f"Crawler {rank} finished after crawling {pages_crawled} pages.")
+    # Final summary
+    error_percentage = (error_count / total_urls_processed) * 100 if total_urls_processed else 0
+    summary_message = (
+        f"Crawler finished. "
+        f"Processed: {total_urls_processed}, "
+        f"Errors: {error_count} ({error_percentage:.2f}%), "
+        f"Skipped (robots.txt): {skipped_due_to_robots}"
+    )
+
+    logging.info(summary_message)
+
 
 if __name__ == '__main__':
     crawler_process()
