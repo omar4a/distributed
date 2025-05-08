@@ -3,11 +3,15 @@ import logging
 import boto3
 import json
 import uuid
+import os
 
-import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
+
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from urllib.parse import quote_plus
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Crawler - %(levelname)s - %(message)s')
@@ -18,12 +22,23 @@ toCrawl_queue = sqs.get_queue_by_name(QueueName='Queue1.fifo')
 crawled_Queue = sqs.get_queue_by_name(QueueName='crawled_URLs.fifo')
 content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo') 
 
-# saving crawled
-import hashlib
-from urllib.parse import quote_plus
+
 
 logging.info(f"Connected to queue: {toCrawl_queue.url}")
 
+# New function to fetch fully rendered HTML using Selenium:
+def fetch_rendered_html(url):
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
+    driver = webdriver.Chrome(options=chrome_options)
+    driver.get(url)
+    time.sleep(3)  # Wait for the page's dynamic content to load.
+    rendered_html = driver.page_source
+    driver.quit()
+    return rendered_html
 
 def save_to_s3(url, html, text):
     """
@@ -87,7 +102,6 @@ def fetch_task_from_queue():
         logging.info("Message deleted from the queue")
         return task_data
     else:
-        logging.info("No tasks available in the queue")
         return None
 
 
@@ -103,20 +117,38 @@ def send_content_to_indexer(content):
 
 def crawler_process():
 
-
-    logging.info(f"Crawler node started")
+    logging.info("Crawler node started")
+    # Initialize the shutdown queue
+    shutdown_queue = sqs.get_queue_by_name(QueueName='shutdown.fifo')
 
     total_urls_processed = 0
     error_count = 0
     skipped_due_to_robots = 0
 
+    printed = False
+    
     while True:
         url = fetch_task_from_queue()
-        if not url:
-            logging.info(f"Crawler received shutdown signal or no task. Exiting.")
-            break
-
+        if url is None:
+            if not printed:
+                logging.info("Task queue is empty. Polling indefinitely.")
+                printed = True
+            # No task available, so poll the shutdown queue
+            shutdown_msgs = shutdown_queue.receive_messages(
+                MaxNumberOfMessages=1,
+                WaitTimeSeconds=2
+            )
+            if shutdown_msgs:
+                shutdown_data = json.loads(shutdown_msgs[0].body)
+                if shutdown_data.get("status") == "finished":
+                    logging.info("Shutdown message received on shutdown.fifo. Exiting crawler.")
+                    break  # Exit the loop (do NOT delete the shutdown message)
+            # Delay to prevent rapid polling
+            time.sleep(2)
+            continue  # Continue polling for tasks
+        
         logging.info(f"Crawler received URL: {url}")
+        printed = False
 
         try:
             url_to_crawl = url['url']
@@ -127,14 +159,11 @@ def crawler_process():
                 logging.info(f"Crawler: Skipping {url_to_crawl} due to robots.txt rules.")
                 skipped_due_to_robots += 1
                 total_urls_processed += 1
-                # comm.send(f"Skipped (robots.txt): {url_to_crawl}", dest=0, tag=98)
                 continue
 
             try:
-                response = requests.get(url_to_crawl, timeout=5)
-                response.raise_for_status()
-                html = response.text
-            except requests.RequestException as e:
+                html = fetch_rendered_html(url_to_crawl)
+            except Exception as e:
                 logging.error(f"Crawler failed fetching {url_to_crawl}: {e}")
                 error_count += 1
                 total_urls_processed += 1
@@ -169,12 +198,12 @@ def crawler_process():
                 send_task_to_queue(new_tasks, "crawled_URLs")
             else:
                 logging.info(f"Crawler: Reached max depth for {url_to_crawl}. Not sending further URL tasks.")
-                # After finishing all tasks, send a "done" message.
-                sqs_resource = boto3.resource('sqs', region_name='eu-north-1')
-                crawler_done_queue = sqs_resource.get_queue_by_name(QueueName='crawler_completion.fifo')
-                done_message = {"status": "done"}
-                crawler_done_queue.send_message(MessageBody=json.dumps(done_message), MessageGroupId=str(uuid.uuid4()))
-                logging.info(f"Crawler finished processing and sent done message.")
+                # # After finishing all tasks, send a "done" message.
+                # sqs_resource = boto3.resource('sqs', region_name='eu-north-1')
+                # crawler_done_queue = sqs_resource.get_queue_by_name(QueueName='crawler_completion.fifo')
+                # done_message = {"status": "done"}
+                # crawler_done_queue.send_message(MessageBody=json.dumps(done_message), MessageGroupId=str(uuid.uuid4()))
+                # logging.info(f"Crawler finished processing and sent done message.")
 
             total_urls_processed += 1
 

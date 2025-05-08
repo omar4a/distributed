@@ -41,6 +41,8 @@ def fetch_rendered_html(url):
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
+
     # You may need to set the executable_path parameter if chrome driver is not in PATH.
     driver = webdriver.Chrome(options=chrome_options)
     driver.get(url)

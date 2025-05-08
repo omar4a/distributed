@@ -56,18 +56,54 @@ def fetch_task_from_queue():
 
 def prompt_and_delegate_search():
     """
-    Continuously prompt for search queries, send them to the indexer, 
-    and display the returned results. The session ends when the user inputs '/.quit'.
+    Continuously prompt for search queries, send them to the indexer,
+    and display the returned results. When '/.quit' is entered,
+    it initiates the shutdown routine.
     """
     while True:
         search_query = input("Enter a search query (or '/.quit' to exit):\n").strip()
         if search_query == "/.quit":
-            logging.info("Exiting search session.")
-            send_search_query(search_query)  # Notify indexer to terminate
+            logging.info("Shutdown command received. Initiating shutdown routine.")
+            send_search_query(search_query)  # Notify the indexer to terminate
+            shutdown_routine()
             break
-        
         send_search_query(search_query)
         poll_for_search_results()
+
+
+def shutdown_routine():
+    """
+    Sends a shutdown message to shutdown.fifo, waits 3 seconds, purges
+    all specified queues, and then exits the master process.
+    """
+    # Send shutdown message to shutdown.fifo (do not delete this message later)
+    shutdown_queue = sqs.get_queue_by_name(QueueName='shutdown.fifo')
+    shutdown_msg = {"status": "finished"}
+    shutdown_queue.send_message(MessageBody=json.dumps(shutdown_msg), MessageGroupId=str(uuid.uuid4()))
+    logging.info("Sent shutdown message to shutdown.fifo.")
+
+    # Wait 3 seconds to allow all nodes to receive the shutdown message
+    time.sleep(3)
+
+    # Purge all the specified queues
+    client = boto3.client('sqs', region_name='eu-north-1')
+    queues_to_purge = [
+        'crawled_content.fifo',
+        'crawled_URLs.fifo',
+        'crawler_completion.fifo',
+        'index_completion.fifo',
+        'Queue1.fifo',
+        'search_query.fifo',
+        'search_results.fifo',
+        'shutdown.fifo'
+    ]
+    for queue_name in queues_to_purge:
+        q = sqs.get_queue_by_name(QueueName=queue_name)
+        client.purge_queue(QueueUrl=q.url)
+        logging.info(f"Purged {queue_name}.")
+
+    logging.info("Shutdown routine completed. Exiting master process.")
+    exit(0)
 
 def send_search_query(query):
     """
