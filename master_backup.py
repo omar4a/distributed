@@ -192,30 +192,7 @@ def poll_for_search_results():
 
 def master_process():
 
-    logging.info(f"Master node started")
-    
-    # Prompt for seed URLs (enter 1 to 5 URLs, comma-separated)
-    seed_input = input("Enter 1-5 seed URLs separated by commas (include http(s)://):\n")
-    seeds = [u.strip() for u in seed_input.split(",") if u.strip()]
-    if not (1 <= len(seeds) <= 5):
-        logging.error("You must provide between 1 and 5 seed URLs.")
-        exit(1)
-
-    # Prompt for DEPTH (an integer between 0 and 20)
-    try:
-        depth = int(input("Enter the crawl depth (0-20):\n"))
-        if not (0 <= depth <= 20):
-            raise ValueError
-    except ValueError:
-        logging.error("Depth must be an integer between 0 and 20.")
-        exit(1)
-
-    # Place each seed URL in the local queue with additional depth information.
-    for seed in seeds:
-        # Each task now is a dictionary with the seed URL,
-        # the current depth (0 initially), and the maximum depth (as provided)
-        seed_task = {"url": seed, "current_depth": 0, "max_depth": depth}
-        urls_to_crawl_queue.put(seed_task)
+    logging.info(f"Backup Master node started")
 
     def receive_crawled_urls():
         """
