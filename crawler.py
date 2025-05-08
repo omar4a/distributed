@@ -3,7 +3,7 @@ import logging
 import boto3
 import json
 import uuid
-import os
+import threading
 
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
@@ -117,7 +117,6 @@ def send_content_to_indexer(content):
 
 def crawler_process():
 
-    logging.info("Crawler node started")
     # Initialize the shutdown queue
     shutdown_queue = sqs.get_queue_by_name(QueueName='shutdown.fifo')
 
@@ -231,4 +230,15 @@ def crawler_process():
 
 
 if __name__ == '__main__':
-    crawler_process()
+
+    logging.info("Crawler node started")
+    
+    threads = []
+    
+    for i in range(2):
+        t = threading.Thread(target=crawler_process, name=f"Crawler-Thread-{i+1}")
+        t.start()
+        threads.append(t)
+    
+    for t in threads:
+        t.join()

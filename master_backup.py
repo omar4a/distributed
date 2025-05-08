@@ -6,6 +6,23 @@ import threading
 import uuid
 from queue import Queue
 
+def standby_loop():
+    heartbeat_queue = sqs.get_queue_by_name(QueueName='master_heartbeat.fifo')
+    timeout = 15  # seconds to wait for a heartbeat
+    while True:
+        messages = heartbeat_queue.receive_messages(MaxNumberOfMessages=1, WaitTimeSeconds=timeout)
+        if messages:
+            # Delete received heartbeat message so the queue doesn’t accumulate stale messages.
+            for msg in messages:
+                msg.delete()
+            logging.info("Heartbeat received. Primary master is alive.")
+        else:
+            logging.info("No heartbeat received within {} seconds. Taking over as active master.".format(timeout))
+            # Promote self to active: call master_process() (or the appropriate takeover function)
+            master_process()
+            break
+        time.sleep(1)
+
 # Configure logging 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Master - %(levelname)s - %(message)s')
 
@@ -13,25 +30,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - Master - %(levelna
 sqs = boto3.resource('sqs', region_name = 'eu-north-1')
 toCrawl_queue = sqs.get_queue_by_name(QueueName = 'Queue1.fifo')
 crawled_Queue = sqs.get_queue_by_name(QueueName = 'crawled_URLs.fifo')
-search_results_queue = sqs.get_queue_by_name(QueueName='search_results.fifo')
-search_query_queue = sqs.get_queue_by_name(QueueName='search_query.fifo')
 urls_to_crawl_queue = Queue()
-
-# Assuming you've created the heartbeat queue beforehand:
-heartbeat_queue = sqs.get_queue_by_name(QueueName='master_heartbeat.fifo')
-
-def send_heartbeat():
-    """Send a heartbeat message to the master_heartbeat queue."""
-    heartbeat_message = {"heartbeat": "alive", "timestamp": int(time.time())}
-    heartbeat_queue.send_message(
-        MessageBody=json.dumps(heartbeat_message),
-        MessageGroupId=str(uuid.uuid4()),
-    )
-
-def heartbeat_loop():
-    while True:
-        send_heartbeat()
-        time.sleep(10)  # send heartbeat every 10 seconds
 
 
 def send_task_to_queue(task_data, groupID):
@@ -147,15 +146,16 @@ def wait_for_indexing_completion():
     prompt_and_delegate_search()
 
 def poll_for_search_results():
+    search_results_queue = sqs.get_queue_by_name(QueueName='search_results.fifo')
+    search_query_queue = sqs.get_queue_by_name(QueueName='search_query.fifo')
     logging.info("Polling for search results and aggregating responses...")
     
     aggregated_results = []
-    timeout = 10
+    timeout = 30
     start_time = time.time()
-    result_found = False
     
-    while time.time() - start_time < timeout and not result_found:
-        messages = search_results_queue.receive_messages(MaxNumberOfMessages=10, WaitTimeSeconds=3)
+    while time.time() - start_time < timeout:
+        messages = search_results_queue.receive_messages(MaxNumberOfMessages=10, WaitTimeSeconds=5)
         if messages:
             for msg in messages:
                 result_data = json.loads(msg.body)
@@ -167,7 +167,6 @@ def poll_for_search_results():
     for (_, result_data) in aggregated_results:
         if result_data.get("results") != "No results found.":
             final_result = result_data
-            result_found = True
             break
     if final_result is None:
         final_result = {"results": "No results found."}
@@ -271,15 +270,12 @@ def master_process():
     receive_thread = threading.Thread(target=receive_crawled_urls, args=())
     assign_thread = threading.Thread(target=assign_urls_to_crawlers, args=())
     index_thread = threading.Thread(target=wait_for_indexing_completion, args=())
-    heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
-    
 
     # Start threads
     receive_thread.start()
     assign_thread.start()
     index_thread.start()
-    heartbeat_thread.start()
 
 if __name__ == '__main__':
-
-    master_process()
+    # On the backup master VM, run the standby loop instead of master_process().
+    standby_loop()

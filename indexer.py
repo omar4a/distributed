@@ -3,9 +3,10 @@ import json
 import time
 import boto3
 import os
+import threading
 import zipfile
-#import threading
 import uuid
+import shutil
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
@@ -139,7 +140,7 @@ def search_query_listener():
 
 
 def indexer_process():
-    logging.info("Indexer started. Listening for content to index...")
+
     start_time = None
 
     while True:
@@ -224,7 +225,25 @@ def indexer_process():
         except Exception as e:
             logging.error(f"Failed to upload index to S3: {e}")
 
+        # Delete local files: the whoosh_index directory and the zip archive.
+        if os.path.exists(INDEX_DIR):
+            shutil.rmtree(INDEX_DIR)
+            logging.info(f"Deleted local index directory: {INDEX_DIR}")
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+            logging.info(f"Deleted local zip archive: {zip_path}")
+
 
 if __name__ == '__main__':
 
-    indexer_process()
+    logging.info("Indexer started. Listening for content to index...")
+
+    threads = []
+    
+    for i in range(2):
+        t = threading.Thread(target=indexer_process, name=f"Indexer-Thread-{i+1}")
+        t.start()
+        threads.append(t)
+    
+    for t in threads:
+        t.join()
