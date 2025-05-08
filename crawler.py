@@ -34,7 +34,14 @@ def fetch_rendered_html(url):
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
     driver = webdriver.Chrome(options=chrome_options)
-    driver.get(url)
+
+    driver.set_page_load_timeout(10)
+    try:
+        driver.get(url)
+    except Exception as e:
+        logging.error(f"Timed out loading {url}: {e}")
+        return ""
+    
     time.sleep(3)  # Wait for the page's dynamic content to load.
     rendered_html = driver.page_source
     driver.quit()
@@ -232,7 +239,7 @@ def crawler_process():
 if __name__ == '__main__':
 
     logging.info("Crawler node started")
-    
+
     threads = []
     
     for i in range(2):
