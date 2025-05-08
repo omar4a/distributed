@@ -6,6 +6,8 @@ import os
 import zipfile
 #import threading
 import uuid
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 
 from whoosh.index import create_in, open_dir
 from whoosh.fields import Schema, TEXT, ID
@@ -32,6 +34,21 @@ if not os.path.exists(INDEX_DIR):
 else:
     ix = open_dir(INDEX_DIR)
 
+# -----------------------------------------------
+# New function to fetch fully rendered HTML using Selenium:
+def fetch_rendered_html(url):
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    # You may need to set the executable_path parameter if chrome driver is not in PATH.
+    driver = webdriver.Chrome(options=chrome_options)
+    driver.get(url)
+    time.sleep(3)  # Wait for JS to execute; adjust if needed.
+    rendered_html = driver.page_source
+    driver.quit()
+    return rendered_html
+
 def clean_text(html):
     soup = BeautifulSoup(html, "html.parser")
     for script in soup(["script", "style"]):
@@ -40,7 +57,7 @@ def clean_text(html):
 
 def index_content(data):
     url = data.get("url")
-    raw_html = data.get("html")
+    raw_html = fetch_rendered_html(url)
     title = data.get("title", url)
 
     if not url or not raw_html:
@@ -48,6 +65,7 @@ def index_content(data):
         return
 
     text = clean_text(raw_html)
+    print(text)
 
     writer = ix.writer()
     writer.update_document(title=title, url=url, content=text)
