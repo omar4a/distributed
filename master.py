@@ -130,28 +130,48 @@ def wait_for_indexing_completion():
 
 def poll_for_search_results():
     search_results_queue = sqs.get_queue_by_name(QueueName='search_results.fifo')
-    logging.info("Polling for search results...")
-    # Example: poll for a limited time
-    timeout = 30  
+    search_query_queue = sqs.get_queue_by_name(QueueName='search_query.fifo')
+    logging.info("Polling for search results and aggregating responses...")
+    
+    aggregated_results = []
+    timeout = 30
     start_time = time.time()
+    
     while time.time() - start_time < timeout:
-        messages = search_results_queue.receive_messages(MaxNumberOfMessages=1, WaitTimeSeconds=10)
+        messages = search_results_queue.receive_messages(MaxNumberOfMessages=10, WaitTimeSeconds=5)
         if messages:
-            msg = messages[0]
-            results = json.loads(msg.body)
-            logging.info(f"Search Results: {results}")
-            print("Search Results:")
-            if "error" in results:
-                print(results["error"])
-            else:
-                for line in results.get("results", []):
-                    print(line)
-            msg.delete()
-            break  # Or continue polling if you expect multiple messages
-        else:
-            time.sleep(1)
+            for msg in messages:
+                result_data = json.loads(msg.body)
+                aggregated_results.append((msg, result_data))
+        time.sleep(1)
+    
+    # Determine the final result based on aggregated responses.
+    final_result = None
+    for (_, result_data) in aggregated_results:
+        if result_data.get("results") != "No results found.":
+            final_result = result_data
+            break
+    if final_result is None:
+        final_result = {"results": "No results found."}
+    
+    logging.info(f"Final Aggregated Search Results: {final_result}")
+    print("Search Results:")
+    if "error" in final_result:
+        print(final_result["error"])
+    elif isinstance(final_result.get("results"), list):
+        for line in final_result.get("results"):
+            print(line)
     else:
-        logging.info("No search results received within timeout.")
+        print(final_result.get("results"))
+    
+    # Delete all received search result messages.
+    for (msg, _) in aggregated_results:
+        msg.delete()
+    
+    # Also delete the search query message(s) from the search_query queue.
+    query_messages = search_query_queue.receive_messages(MaxNumberOfMessages=10, WaitTimeSeconds=5)
+    for qm in query_messages:
+        qm.delete()
 
 def master_process():
 

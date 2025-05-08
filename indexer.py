@@ -96,20 +96,27 @@ def finalize_index():
 def search_query_listener():
     search_query_queue = sqs.get_queue_by_name(QueueName='search_query.fifo')
     search_results_queue = sqs.get_queue_by_name(QueueName='search_results.fifo')
+    last_query = None  # To process a query only once per indexer
     while True:
         messages = search_query_queue.receive_messages(MaxNumberOfMessages=1, WaitTimeSeconds=10)
         if messages:
             msg = messages[0]
             query_data = json.loads(msg.body)
             query = query_data.get("query", "").strip()
+            
+            # If this query was already processed, skip processing
+            if query == last_query:
+                time.sleep(1)
+                continue
+            last_query = query
+            
             logging.info(f"Indexer received search query: {query}")
             
-            # Check for the quit command
+            # If this is the quit command, exit the listener (but do not delete the query msg)
             if query == "/.quit":
                 logging.info("Received quit command. Terminating search query listener.")
-                msg.delete()
-                break  # Exit the loop to quit the listener
-            
+                break
+
             qp = MultifieldParser(["title", "content"], schema=ix.schema, group=OrGroup.factory(0.9))
             try:
                 q = qp.parse(query)
@@ -122,12 +129,11 @@ def search_query_listener():
             except Exception as e:
                 results = {"error": f"Invalid query: {e}"}
             
-            # Send back the results.
             search_results_queue.send_message(
                 MessageBody=json.dumps(results),
                 MessageGroupId=str(uuid.uuid4())
             )
-            msg.delete()
+            # Do NOT delete the query message so that other indexers can also process it.
         else:
             time.sleep(1)
 
