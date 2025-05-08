@@ -134,11 +134,8 @@ def search_query_listener():
 
 def indexer_process():
     logging.info("Indexer started. Listening for content to index...")
-
-    #threading.Thread(target=search_query_listener, daemon=True).start()
-
     start_time = None
-    
+
     while True:
         messages = content_queue.receive_messages(
             MaxNumberOfMessages=5,
@@ -146,9 +143,7 @@ def indexer_process():
             VisibilityTimeout=20
         )
         if messages:
-
             start_time = None
-        
             for msg in messages:
                 try:
                     content_data = json.loads(msg.body)
@@ -160,18 +155,47 @@ def indexer_process():
                     msg.delete()
                 except Exception as e:
                     logging.error(f"Failed to process message: {e}")
-
         else:
             if start_time is None:
                 start_time = time.time()
             else:
                 elapsed = time.time() - start_time
                 if elapsed >= 10:
-                    logging.info("No messages received for 10 seconds; breaking out of the loop.")
-                    break
-            # Short delay to avoid hammering the queue when empty.
+                    # Check if crawler_completion.fifo has a done message
+                    crawler_done_queue = sqs.get_queue_by_name(QueueName='crawler_completion.fifo')
+                    done_messages = crawler_done_queue.receive_messages(
+                        MaxNumberOfMessages=1,
+                        WaitTimeSeconds=2
+                    )
+                    if done_messages:
+                        done_data = json.loads(done_messages[0].body)
+                        if done_data.get("status") == "done":
+                            logging.info("Crawler_completion indicates 'done'. Checking final crawled_content messages.")
+                            
+                            # Final check: process any remaining messages in crawled_content.fifo
+                            final_msgs = content_queue.receive_messages(
+                                MaxNumberOfMessages=5,
+                                WaitTimeSeconds=3
+                            )
+                            while final_msgs:
+                                for msg in final_msgs:
+                                    try:
+                                        content_data = json.loads(msg.body)
+                                        if isinstance(content_data, list):
+                                            for item in content_data:
+                                                index_content(item)
+                                        else:
+                                            index_content(content_data)
+                                        msg.delete()
+                                    except Exception as e:
+                                        logging.error(f"Failed processing final message: {e}")
+                                final_msgs = content_queue.receive_messages(
+                                    MaxNumberOfMessages=5,
+                                    WaitTimeSeconds=3
+                                )
+                            logging.info("Final crawled_content check complete; exiting indexer loop.")
+                            break
             time.sleep(1)
-
 
 
     index_completion_queue = sqs.get_queue_by_name(QueueName='index_completion.fifo')

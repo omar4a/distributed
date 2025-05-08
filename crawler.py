@@ -188,8 +188,6 @@ def crawler_process():
             logging.info(f"Crawler: Extracted {len(extracted_urls)} URLs, {len(text)} characters of text.")
             print(f"Crawler done. Found {len(extracted_urls)} links.")
 
-            time.sleep(2)  # Simulate delay
-
             logging.info(f"Crawler crawled {url_to_crawl}, extracted {len(extracted_urls)} URLs.")
 
             if current_depth < max_depth:
@@ -198,12 +196,12 @@ def crawler_process():
                 send_task_to_queue(new_tasks, "crawled_URLs")
             else:
                 logging.info(f"Crawler: Reached max depth for {url_to_crawl}. Not sending further URL tasks.")
-                # # After finishing all tasks, send a "done" message.
-                # sqs_resource = boto3.resource('sqs', region_name='eu-north-1')
-                # crawler_done_queue = sqs_resource.get_queue_by_name(QueueName='crawler_completion.fifo')
-                # done_message = {"status": "done"}
-                # crawler_done_queue.send_message(MessageBody=json.dumps(done_message), MessageGroupId=str(uuid.uuid4()))
-                # logging.info(f"Crawler finished processing and sent done message.")
+                # After finishing all tasks, send a "done" message.
+                sqs_resource = boto3.resource('sqs', region_name='eu-north-1')
+                crawler_done_queue = sqs_resource.get_queue_by_name(QueueName='crawler_completion.fifo')
+                done_message = {"status": "done"}
+                crawler_done_queue.send_message(MessageBody=json.dumps(done_message), MessageGroupId=str(uuid.uuid4()))
+                logging.info(f"Crawler finished processing and sent done message.")
 
             total_urls_processed += 1
 
@@ -219,7 +217,6 @@ def crawler_process():
             logging.error(f"Crawler error crawling {url_to_crawl}: {e}")
             error_count += 1
             total_urls_processed += 1
-            # comm.send(f"Error crawling {url_to_crawl}: {e}", dest=0, tag=999)
 
     # Final summary
     error_percentage = (error_count / total_urls_processed) * 100 if total_urls_processed else 0
@@ -231,7 +228,6 @@ def crawler_process():
     )
 
     logging.info(summary_message)
-    # comm.send(summary_message, dest=0, tag=100)
 
 
 if __name__ == '__main__':
