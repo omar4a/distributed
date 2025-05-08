@@ -1,4 +1,7 @@
 boto3
 requests
 beautifulsoup4
-mpi4py
+uuid
+bs4
+selenium
+whoosh
