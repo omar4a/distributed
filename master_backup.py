@@ -15,7 +15,6 @@ def standby_loop():
             # Delete received heartbeat message so the queue doesn’t accumulate stale messages.
             for msg in messages:
                 msg.delete()
-            logging.info("Heartbeat received. Primary master is alive.")
         else:
             logging.info("No heartbeat received within {} seconds. Taking over as active master.".format(timeout))
             # Promote self to active: call master_process() (or the appropriate takeover function)
