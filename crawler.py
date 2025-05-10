@@ -38,8 +38,10 @@ def fetch_rendered_html(url):
     chrome_options.add_argument("--disable-extensions")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
     chrome_options.page_load_strategy = "eager"
+    prefs = {"profile.default_content_setting_values.images": 2}
+    chrome_options.add_experimental_option("prefs", prefs)
 
-    max_attempts = 2  # Total number of attempts to fetch the page
+    max_attempts = 1  # Total number of attempts to fetch the page
     for attempt in range(max_attempts):
         driver = None  # Ensure a fresh driver each time
         try:
