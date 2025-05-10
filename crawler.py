@@ -103,7 +103,7 @@ def fetch_task_from_queue():
         logging.info(f"Task received: {task_data}")
         return message, task_data
     else:
-        return None
+        return None, None
 
 def send_content_to_indexer(content):
     try:
