@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from urllib.parse import quote_plus
@@ -28,31 +28,31 @@ content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo')
 
 logging.info(f"Connected to queue: {toCrawl_queue.url}")
 
-# New function to fetch fully rendered HTML using Selenium:
 def fetch_rendered_html(url):
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
-    chrome_options.page_load_strategy = "eager"
-    prefs = {"profile.default_content_setting_values.images": 2}
-    chrome_options.add_experimental_option("prefs", prefs)
+    # Set up Firefox options for headless operation and an "eager" page load strategy
+    firefox_options = FirefoxOptions()
+    firefox_options.add_argument("--headless")
+    firefox_options.page_load_strategy = "eager"
+
+    # Create a Firefox profile and disable image loading
+    profile = webdriver.FirefoxProfile()
+    profile.set_preference("permissions.default.image", 2)  # 2 = Block images
+    profile.update_preferences()
 
     max_attempts = 1  # Total number of attempts to fetch the page
     for attempt in range(max_attempts):
         driver = None  # Ensure a fresh driver each time
         try:
-            driver = webdriver.Chrome(options=chrome_options)
-            driver.set_page_load_timeout(15)
+            driver = webdriver.Firefox(options=firefox_options, firefox_profile=profile)
+            driver.set_page_load_timeout(15)  # Lower page load timeout
             driver.get(url)
-            # Wait up to 15 seconds until the document is "interactive" or "complete"
-            # and the <body> contains more than 50 characters
+            
+            # Wait up to 15 seconds until either:
+            # 1. The document's readyState is "interactive" or "complete", OR
+            # 2. The <body> element contains more than 1000 non-whitespace characters.
             WebDriverWait(driver, 15).until(
-                lambda d: d.execute_script("return document.readyState") in ["interactive", "complete"]
-                          or len(d.find_element(By.TAG_NAME, "body").text.strip()) > 1000
+                lambda d: (d.execute_script("return document.readyState") in ["interactive", "complete"]) or
+                          (len(d.find_element(By.TAG_NAME, "body").text.strip()) > 1000)
             )
             rendered_html = driver.page_source
             driver.quit()
@@ -64,7 +64,7 @@ def fetch_rendered_html(url):
                     driver.quit()
                 except Exception as quit_err:
                     logging.error(f"Error quitting driver on attempt {attempt + 1}: {quit_err}")
-            # loop will restart and try again with a fresh driver
+            # The loop will then restart with a fresh driver instance if more attempts are allowed.
     return ""
 
 def save_to_s3(url, html, text):
