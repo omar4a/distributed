@@ -25,21 +25,34 @@ content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo')
 def fetch_rendered_html(url):
     # Ensure the current thread has an event loop
     try:
-        asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
     except RuntimeError:
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
-    
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     session = HTMLSession()
     try:
         # Get the URL with a 15-second timeout
         response = session.get(url, timeout=15)
-        # Render the JavaScript and dynamic HTML. Note:
-        # render() is asynchronous under the hood, hence it needs an event loop.
-        response.html.render(timeout=15, sleep=1)
+        # Asynchronously render the dynamic content with a 15s overall timeout.
+        # Using arender (the async version) wrapped in asyncio.wait_for.
+        loop.run_until_complete(
+            asyncio.wait_for(response.html.arender(timeout=15, sleep=1), timeout=15)
+        )
+        # Check the page readyState (allows "interactive" or "complete")
+        ready_state = loop.run_until_complete(
+            response.html.page.evaluate("document.readyState")
+        )
+        if ready_state not in ["interactive", "complete"]:
+            logging.info(f"{url}: readyState is '{ready_state}' but proceeding anyway.")
         return response.html.html
+    except asyncio.TimeoutError:
+        logging.error(f"Timeout: Rendering {url} exceeded 15s. Aborting and resetting the browser.")
+        session.close()  # Reset the underlying browser (Chromium) instance
+        return ""
     except Exception as e:
         logging.error(f"Failed rendering {url}: {e}")
+        session.close()
         return ""
 
 def save_to_s3(url, html, text):
