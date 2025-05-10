@@ -42,12 +42,36 @@ def fetch_rendered_html(url):
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")         # New flag to avoid /dev/shm issues
+    chrome_options.add_argument("--disable-extensions")             # Disable extensions to reduce resource use
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
+    chrome_options.page_load_strategy = "eager"                     # Change page load strategy
 
-    # You may need to set the executable_path parameter if chrome driver is not in PATH.
     driver = webdriver.Chrome(options=chrome_options)
-    driver.get(url)
-    time.sleep(3)  # Wait for JS to execute; adjust if needed.
+    
+    # Set a shorter page load timeout for quick failure (e.g. 10 seconds)
+    driver.set_page_load_timeout(10)
+
+    # Implement simple retry logic (max 2 attempts)
+    attempts = 0
+    while attempts < 2:
+        try:
+            driver.get(url)
+            break  # Success
+        except Exception as e:
+            attempts += 1
+            logging.error(f"Attempt {attempts}: Timed out loading {url}: {e}")
+            if attempts >= 2:
+                driver.quit()
+                return ""
+    
+    # Replace fixed sleep with an explicit wait until the document is complete
+    try:
+        from selenium.webdriver.support.ui import WebDriverWait
+        WebDriverWait(driver, 10).until(lambda d: d.execute_script("return document.readyState") == "complete")
+    except Exception as e:
+        logging.error(f"Explicit wait failed for {url}: {e}")
+    
     rendered_html = driver.page_source
     driver.quit()
     return rendered_html
@@ -138,12 +162,21 @@ def search_query_listener():
         else:
             time.sleep(1)
 
-
 def indexer_process():
 
+    # Initialize the shutdown queue once
+    shutdown_queue = sqs.get_queue_by_name(QueueName='shutdown.fifo')
     start_time = None
 
     while True:
+        # NEW: Check for shutdown signal at the beginning of each loop iteration.
+        shutdown_msgs = shutdown_queue.receive_messages(MaxNumberOfMessages=1, WaitTimeSeconds=2)
+        if shutdown_msgs:
+            shutdown_data = json.loads(shutdown_msgs[0].body)
+            if shutdown_data.get("status") == "finished":
+                logging.info("Shutdown message received on shutdown.fifo. Exiting indexer process.")
+                break
+
         messages = content_queue.receive_messages(
             MaxNumberOfMessages=5,
             WaitTimeSeconds=10,

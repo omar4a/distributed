@@ -153,7 +153,6 @@ def crawler_process():
             time.sleep(2)
             continue  # Continue polling for tasks
         
-        logging.info(f"Crawler received URL: {url}")
         printed = False
 
         try:
