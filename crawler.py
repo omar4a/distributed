@@ -41,9 +41,9 @@ def fetch_rendered_html(url):
     
     driver.set_page_load_timeout(20)
 
-    # Implement simple retry logic (max 2 attempts)
+    # Implement simple retry logic (max 1 attempt)
     attempts = 0
-    while attempts < 2:
+    while attempts < 1:
         try:
             driver.get(url)
             break  # Success
@@ -57,7 +57,9 @@ def fetch_rendered_html(url):
     # Replace fixed sleep with an explicit wait until the document is complete
     try:
         from selenium.webdriver.support.ui import WebDriverWait
-        WebDriverWait(driver, 10).until(lambda d: d.execute_script("return document.readyState") == "complete")
+        WebDriverWait(driver, 20).until(
+            lambda d: d.execute_script("return document.readyState") in ["interactive", "complete"]
+    )
     except Exception as e:
         logging.error(f"Explicit wait failed for {url}: {e}")
     
