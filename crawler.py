@@ -32,17 +32,35 @@ def fetch_rendered_html(url):
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-extensions")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
-    driver = webdriver.Chrome(options=chrome_options)
+    chrome_options.page_load_strategy = "eager"
 
-    driver.set_page_load_timeout(10)
-    try:
-        driver.get(url)
-    except Exception as e:
-        logging.error(f"Timed out loading {url}: {e}")
-        return ""
+    driver = webdriver.Chrome(options=chrome_options)
     
-    time.sleep(3)  # Wait for the page's dynamic content to load.
+    driver.set_page_load_timeout(20)
+
+    # Implement simple retry logic (max 2 attempts)
+    attempts = 0
+    while attempts < 2:
+        try:
+            driver.get(url)
+            break  # Success
+        except Exception as e:
+            attempts += 1
+            logging.error(f"Attempt {attempts}: Timed out loading {url}: {e}")
+            if attempts >= 2:
+                driver.quit()
+                return ""
+    
+    # Replace fixed sleep with an explicit wait until the document is complete
+    try:
+        from selenium.webdriver.support.ui import WebDriverWait
+        WebDriverWait(driver, 10).until(lambda d: d.execute_script("return document.readyState") == "complete")
+    except Exception as e:
+        logging.error(f"Explicit wait failed for {url}: {e}")
+    
     rendered_html = driver.page_source
     driver.quit()
     return rendered_html
