@@ -3,7 +3,6 @@ import json
 import time
 import boto3
 import os
-import threading
 import zipfile
 import uuid
 import shutil
@@ -14,8 +13,6 @@ from whoosh.index import create_in, open_dir
 from whoosh.fields import Schema, TEXT, ID
 from whoosh.qparser import MultifieldParser, OrGroup
 from bs4 import BeautifulSoup
-
-#termination_event = threading.Event()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Indexer - %(levelname)s - %(message)s')
@@ -271,12 +268,4 @@ if __name__ == '__main__':
 
     logging.info("Indexer started. Listening for content to index...")
 
-    threads = []
-    
-    for i in range(2):
-        t = threading.Thread(target=indexer_process, name=f"Indexer-Thread-{i+1}")
-        t.start()
-        threads.append(t)
-    
-    for t in threads:
-        t.join()
+    indexer_process()

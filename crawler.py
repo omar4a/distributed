@@ -26,11 +26,9 @@ content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo')
 async def async_fetch_rendered_html(url):
     asession = AsyncHTMLSession()
     try:
+        response = await asession.get(url, timeout=15)
+        await asyncio.wait_for(response.html.arender(timeout=15, sleep=1), timeout=15)
 
-        response = await asession.get(url, timeout=20)
-        await asyncio.wait_for(response.html.arender(timeout=20, sleep=1), timeout=20)
-
-        # Safely check document.readyState.
         if response.html.page is not None:
             ready_state = await response.html.page.evaluate("document.readyState")
             if ready_state not in ["interactive", "complete"]:
@@ -38,11 +36,15 @@ async def async_fetch_rendered_html(url):
         else:
             logging.error(f"{url}: response.html.page is None, proceeding without readyState validation.")
 
-        return response.html.html
+        html_content = response.html.html
+        await asession.close()  # Force browser cleanup immediately after rendering
+        return html_content
+
     except asyncio.TimeoutError:
-        logging.error(f"Timeout: Rendering {url} exceeded 20s. Aborting and resetting the browser.")
-        await asession.close()  # Reset the underlying Chromium instance.
+        logging.error(f"Timeout: Rendering {url} exceeded 15s. Aborting and resetting the browser.")
+        await asession.close()  # Force cleanup
         return ""
+
     except Exception as e:
         logging.error(f"Failed rendering {url}: {e}")
         await asession.close()
