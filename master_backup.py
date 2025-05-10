@@ -8,7 +8,7 @@ from queue import Queue
 
 def standby_loop():
     heartbeat_queue = sqs.get_queue_by_name(QueueName='master_heartbeat.fifo')
-    timeout = 15  # seconds to wait for a heartbeat
+    timeout = 20  # seconds to wait for a heartbeat
     while True:
         messages = heartbeat_queue.receive_messages(MaxNumberOfMessages=1, WaitTimeSeconds=timeout)
         if messages:
