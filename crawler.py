@@ -39,38 +39,31 @@ def fetch_rendered_html(url):
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
     chrome_options.page_load_strategy = "eager"
 
-    driver = webdriver.Chrome(options=chrome_options)
-    
-    driver.set_page_load_timeout(20)
-
-    # Implement simple retry logic (max 1 attempt)
-    attempts = 0
-    while attempts < 1:
+    max_attempts = 2  # Total number of attempts to fetch the page
+    for attempt in range(max_attempts):
+        driver = None  # Ensure a fresh driver each time
         try:
+            driver = webdriver.Chrome(options=chrome_options)
+            driver.set_page_load_timeout(15)
             driver.get(url)
-            break  # Success
+            # Wait up to 15 seconds until the document is "interactive" or "complete"
+            # and the <body> contains more than 50 characters
+            WebDriverWait(driver, 15).until(
+                lambda d: d.execute_script("return document.readyState") in ["interactive", "complete"]
+                          and len(d.find_element(By.TAG_NAME, "body").text.strip()) > 50
+            )
+            rendered_html = driver.page_source
+            driver.quit()
+            return rendered_html
         except Exception as e:
-            attempts += 1
-            logging.error(f"Attempt {attempts}: Timed out loading {url}: {e}")
-            if attempts >= 2:
-                driver.quit()
-                return ""
-    
-    # Replace fixed sleep with an explicit wait until the document is complete
-    try:
-    
-        # Wait up to 30 seconds until the document is "interactive" or "complete" 
-        # and the <body> contains more than 50 characters (indicating meaningful content)
-        WebDriverWait(driver, 30).until(
-            lambda d: d.execute_script("return document.readyState") in ["interactive", "complete"] or
-                    len(d.find_element(By.TAG_NAME, "body").text.strip()) > 1000
-    )
-    except Exception as e:
-        logging.error(f"Explicit wait failed for {url}: {e}")
-    
-    rendered_html = driver.page_source
-    driver.quit()
-    return rendered_html
+            logging.error(f"Attempt {attempt + 1}: Failed fetching {url}: {e}")
+            if driver is not None:
+                try:
+                    driver.quit()
+                except Exception as quit_err:
+                    logging.error(f"Error quitting driver on attempt {attempt + 1}: {quit_err}")
+            # loop will restart and try again with a fresh driver
+    return ""
 
 def save_to_s3(url, html, text):
     """
