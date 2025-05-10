@@ -52,7 +52,7 @@ def fetch_rendered_html(url):
             # and the <body> contains more than 50 characters
             WebDriverWait(driver, 15).until(
                 lambda d: d.execute_script("return document.readyState") in ["interactive", "complete"]
-                          and len(d.find_element(By.TAG_NAME, "body").text.strip()) > 50
+                          or len(d.find_element(By.TAG_NAME, "body").text.strip()) > 1000
             )
             rendered_html = driver.page_source
             driver.quit()
