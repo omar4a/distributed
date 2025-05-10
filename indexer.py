@@ -6,22 +6,19 @@ import os
 import zipfile
 import uuid
 import shutil
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+from requests_html import AsyncHTMLSession
+import asyncio
 
 from whoosh.index import create_in, open_dir
 from whoosh.fields import Schema, TEXT, ID
 from whoosh.qparser import MultifieldParser, OrGroup
 from bs4 import BeautifulSoup
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Indexer - %(levelname)s - %(message)s')
 
-# AWS SQS Setup
 sqs = boto3.resource('sqs', region_name='eu-north-1')
 content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo')
 
-# Whoosh index setup
 INDEX_DIR = "whoosh_index"
 
 schema = Schema(title=TEXT(stored=True), url=ID(stored=True, unique=True), content=TEXT)
@@ -32,46 +29,36 @@ if not os.path.exists(INDEX_DIR):
 else:
     ix = open_dir(INDEX_DIR)
 
-# -----------------------------------------------
-# New function to fetch fully rendered HTML using Selenium:
-def fetch_rendered_html(url):
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")         # New flag to avoid /dev/shm issues
-    chrome_options.add_argument("--disable-extensions")             # Disable extensions to reduce resource use
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
-    chrome_options.page_load_strategy = "eager"                     # Change page load strategy
 
-    driver = webdriver.Chrome(options=chrome_options)
-    
-    # Set a shorter page load timeout for quick failure (e.g. 10 seconds)
-    driver.set_page_load_timeout(10)
-
-    # Implement simple retry logic (max 2 attempts)
-    attempts = 0
-    while attempts < 2:
-        try:
-            driver.get(url)
-            break  # Success
-        except Exception as e:
-            attempts += 1
-            logging.error(f"Attempt {attempts}: Timed out loading {url}: {e}")
-            if attempts >= 2:
-                driver.quit()
-                return ""
-    
-    # Replace fixed sleep with an explicit wait until the document is complete
+async def async_fetch_rendered_html(url):
+    session = AsyncHTMLSession()
     try:
-        from selenium.webdriver.support.ui import WebDriverWait
-        WebDriverWait(driver, 10).until(lambda d: d.execute_script("return document.readyState") == "complete")
+
+        response = await session.get(url, timeout=20)
+
+        await asyncio.wait_for(response.html.arender(timeout=20, sleep=1), timeout=20)
+        
+        if response.html.page is not None:
+            ready_state = await response.html.page.evaluate("document.readyState")
+            if ready_state not in ["interactive", "complete"]:
+                logging.info(f"{url}: readyState is '{ready_state}' but proceeding anyway.")
+        else:
+            logging.error(f"{url}: response.html.page is None. Proceeding without readyState validation.")
+
+        html_content = response.html.html
+        await session.close()  # Close the session to reset the browser
+        return html_content
+    except asyncio.TimeoutError:
+        logging.error(f"Timeout: Rendering {url} exceeded 15s. Aborting and resetting the browser.")
+        await session.close()
+        return ""
     except Exception as e:
-        logging.error(f"Explicit wait failed for {url}: {e}")
-    
-    rendered_html = driver.page_source
-    driver.quit()
-    return rendered_html
+        logging.error(f"Failed rendering {url}: {e}")
+        await session.close()
+        return ""
+
+def fetch_rendered_html(url):
+    return asyncio.run(async_fetch_rendered_html(url))
 
 def clean_text(html):
     soup = BeautifulSoup(html, "html.parser")
@@ -134,7 +121,6 @@ def search_query_listener():
             
             logging.info(f"Indexer received search query: {query}")
             
-            # If this is the quit command, exit the listener (but do not delete the query msg)
             if query == "/.quit":
                 logging.info("Received quit command. Terminating search query listener.")
                 break
@@ -155,18 +141,16 @@ def search_query_listener():
                 MessageBody=json.dumps(results),
                 MessageGroupId=str(uuid.uuid4())
             )
-            # Do NOT delete the query message so that other indexers can also process it.
         else:
             time.sleep(1)
 
 def indexer_process():
 
-    # Initialize the shutdown queue once
     shutdown_queue = sqs.get_queue_by_name(QueueName='shutdown.fifo')
     start_time = None
 
     while True:
-        # NEW: Check for shutdown signal at the beginning of each loop iteration.
+        
         shutdown_msgs = shutdown_queue.receive_messages(MaxNumberOfMessages=1, WaitTimeSeconds=2)
         if shutdown_msgs:
             shutdown_data = json.loads(shutdown_msgs[0].body)

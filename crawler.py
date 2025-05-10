@@ -11,9 +11,6 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, quote_plus
 from urllib.robotparser import RobotFileParser
 
-from requests_html import HTMLSession  # For dynamic HTML and JS rendering
-
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Crawler - %(levelname)s - %(message)s')
 
 # Initialize SQS queues
@@ -42,7 +39,7 @@ async def async_fetch_rendered_html(url):
 
     except asyncio.TimeoutError:
         logging.error(f"Timeout: Rendering {url} exceeded 15s. Aborting and resetting the browser.")
-        await asession.close()  # Force cleanup
+        await asession.close()
         return ""
 
     except Exception as e:
@@ -104,9 +101,7 @@ def fetch_task_from_queue():
         message = messages[0]
         task_data = json.loads(message.body)
         logging.info(f"Task received: {task_data}")
-        message.delete()
-        logging.info("Message deleted from the queue")
-        return task_data
+        return message, task_data
     else:
         return None
 
@@ -130,7 +125,7 @@ def crawler_process():
     printed = False
 
     while True:
-        task = fetch_task_from_queue()
+        msg, task = fetch_task_from_queue()
         if task is None:
             if not printed:
                 logging.info("Task queue is empty. Polling indefinitely.")
@@ -202,6 +197,7 @@ def crawler_process():
                 "title": soup.title.string if soup.title else url_to_crawl
             }
             send_content_to_indexer(message)
+            msg.delete()
 
         except Exception as e:
             logging.error(f"Crawler error crawling {url_to_crawl}: {e}")
