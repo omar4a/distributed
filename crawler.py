@@ -4,6 +4,7 @@ import boto3
 import json
 import uuid
 import asyncio
+from requests_html import AsyncHTMLSession
 
 
 from bs4 import BeautifulSoup
@@ -22,38 +23,30 @@ crawled_Queue = sqs.get_queue_by_name(QueueName='crawled_URLs.fifo')
 content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo')
 
 
-def fetch_rendered_html(url):
-    # Ensure the current thread has an event loop
+async def async_fetch_rendered_html(url):
+    asession = AsyncHTMLSession()
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    session = HTMLSession()
-    try:
-        # Get the URL with a 15-second timeout
-        response = session.get(url, timeout=15)
-        # Asynchronously render the dynamic content with a 15s overall timeout.
-        # Using arender (the async version) wrapped in asyncio.wait_for.
-        loop.run_until_complete(
-            asyncio.wait_for(response.html.arender(timeout=15, sleep=1), timeout=15)
-        )
-        # Check the page readyState (allows "interactive" or "complete")
-        ready_state = loop.run_until_complete(
-            response.html.page.evaluate("document.readyState")
-        )
+        # Fetch the URL with a 15-second timeout.
+        response = await asession.get(url, timeout=15)
+        # Render dynamic content: enforce an overall timeout of 15s.
+        await asyncio.wait_for(response.html.arender(timeout=15, sleep=1), timeout=15)
+        # Check document.readyState and log if not "interactive" or "complete"
+        ready_state = await response.html.page.evaluate("document.readyState")
         if ready_state not in ["interactive", "complete"]:
             logging.info(f"{url}: readyState is '{ready_state}' but proceeding anyway.")
         return response.html.html
     except asyncio.TimeoutError:
         logging.error(f"Timeout: Rendering {url} exceeded 15s. Aborting and resetting the browser.")
-        session.close()  # Reset the underlying browser (Chromium) instance
+        await asession.close()  # Reset the underlying Chromium instance.
         return ""
     except Exception as e:
         logging.error(f"Failed rendering {url}: {e}")
-        session.close()
+        await asession.close()
         return ""
+
+def fetch_rendered_html(url):
+    # Run the async fetch in a dedicated event loop.
+    return asyncio.run(async_fetch_rendered_html(url))
 
 def save_to_s3(url, html, text):
     """
