@@ -8,19 +8,22 @@ from queue import Queue
 
 def standby_loop():
     heartbeat_queue = sqs.get_queue_by_name(QueueName='master_heartbeat.fifo')
-    timeout = 20  # seconds to wait for a heartbeat
+    timeout = 15  # seconds to wait for a heartbeat
+    last_heartbeat = time.time()
     while True:
-        messages = heartbeat_queue.receive_messages(MaxNumberOfMessages=1, WaitTimeSeconds=timeout)
+        messages = heartbeat_queue.receive_messages(MaxNumberOfMessages=10, WaitTimeSeconds=timeout)
         if messages:
-            # Delete received heartbeat message so the queue doesn’t accumulate stale messages.
             for msg in messages:
                 msg.delete()
+            # Update last heartbeat time when any heartbeat is received.
+            last_heartbeat = time.time()
         else:
-            logging.info("No heartbeat received within {} seconds. Taking over as active master.".format(timeout))
-            # Promote self to active: call master_process() (or the appropriate takeover function)
-            master_process()
-            break
-        time.sleep(1)
+            # No messages received in this polling round.
+            if time.time() - last_heartbeat >= timeout:
+                logging.info("No heartbeat received within {} seconds. Taking over as active master.".format(timeout))
+                master_process()
+                break
+        time.sleep(2)
 
 # Configure logging 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Master - %(levelname)s - %(message)s')

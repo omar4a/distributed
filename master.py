@@ -31,7 +31,7 @@ def send_heartbeat():
 def heartbeat_loop():
     while True:
         send_heartbeat()
-        time.sleep(15)  # send heartbeat every 10 seconds
+        time.sleep(10)  # send heartbeat every 10 seconds
 
 
 def send_task_to_queue(task_data, groupID):
