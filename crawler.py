@@ -3,7 +3,6 @@ import logging
 import boto3
 import json
 import uuid
-import threading
 import asyncio
 
 
@@ -208,10 +207,4 @@ def crawler_process():
 
 if __name__ == '__main__':
     logging.info("Crawler node started")
-    threads = []
-    for i in range(2):
-        t = threading.Thread(target=crawler_process, name=f"Crawler-Thread-{i+1}")
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join()
+    crawler_process()

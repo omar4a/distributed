@@ -5,3 +5,4 @@ uuid
 bs4
 selenium
 whoosh
+requests_html
