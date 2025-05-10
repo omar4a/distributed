@@ -11,6 +11,8 @@ from urllib.robotparser import RobotFileParser
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.by import By
 from urllib.parse import quote_plus
 
 # Configure logging
@@ -56,9 +58,12 @@ def fetch_rendered_html(url):
     
     # Replace fixed sleep with an explicit wait until the document is complete
     try:
-        from selenium.webdriver.support.ui import WebDriverWait
-        WebDriverWait(driver, 20).until(
-            lambda d: d.execute_script("return document.readyState") in ["interactive", "complete"]
+    
+        # Wait up to 30 seconds until the document is "interactive" or "complete" 
+        # and the <body> contains more than 50 characters (indicating meaningful content)
+        WebDriverWait(driver, 30).until(
+            lambda d: d.execute_script("return document.readyState") in ["interactive", "complete"] or
+                    len(d.find_element(By.TAG_NAME, "body").text.strip()) > 1000
     )
     except Exception as e:
         logging.error(f"Explicit wait failed for {url}: {e}")
