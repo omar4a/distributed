@@ -4,16 +4,14 @@ import boto3
 import json
 import uuid
 import threading
+import asyncio
+
 
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, quote_plus
 from urllib.robotparser import RobotFileParser
 
-from selenium import webdriver
-from selenium.webdriver.firefox.options import Options as FirefoxOptions
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.common.by import By
-from urllib.parse import quote_plus
+from requests_html import HTMLSession  # For dynamic HTML and JS rendering
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Crawler - %(levelname)s - %(message)s')
@@ -22,53 +20,28 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - Crawler - %(leveln
 sqs = boto3.resource('sqs', region_name='eu-north-1')
 toCrawl_queue = sqs.get_queue_by_name(QueueName='Queue1.fifo')
 crawled_Queue = sqs.get_queue_by_name(QueueName='crawled_URLs.fifo')
-content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo') 
+content_queue = sqs.get_queue_by_name(QueueName='crawled_content.fifo')
 
-
-
-logging.info(f"Connected to queue: {toCrawl_queue.url}")
 
 def fetch_rendered_html(url):
-    # Set up Firefox options for headless operation and an "eager" page load strategy
-    firefox_options = FirefoxOptions()
-    firefox_options.add_argument("--headless")
-    firefox_options.page_load_strategy = "eager"
-
-    # Create a Firefox profile and disable image loading
-    firefox_options = FirefoxOptions()
-    firefox_options.add_argument("--headless")
-    firefox_options.page_load_strategy = "eager"
-    firefox_options.set_preference("permissions.default.image", 2)  # Block images
-
+    # Ensure the current thread has an event loop
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
     
-
-    max_attempts = 1  # Total number of attempts to fetch the page
-    for attempt in range(max_attempts):
-        driver = None  # Ensure a fresh driver each time
-        try:
-            driver = webdriver.Firefox(options=firefox_options)
-            driver.set_page_load_timeout(15)  # Lower page load timeout
-            driver.get(url)
-            
-            # Wait up to 15 seconds until either:
-            # 1. The document's readyState is "interactive" or "complete", OR
-            # 2. The <body> element contains more than 1000 non-whitespace characters.
-            WebDriverWait(driver, 15).until(
-                lambda d: (d.execute_script("return document.readyState") in ["interactive", "complete"]) or
-                          (len(d.find_element(By.TAG_NAME, "body").text.strip()) > 1000)
-            )
-            rendered_html = driver.page_source
-            driver.quit()
-            return rendered_html
-        except Exception as e:
-            logging.error(f"Attempt {attempt + 1}: Failed fetching {url}: {e}")
-            if driver is not None:
-                try:
-                    driver.quit()
-                except Exception as quit_err:
-                    logging.error(f"Error quitting driver on attempt {attempt + 1}: {quit_err}")
-            # The loop will then restart with a fresh driver instance if more attempts are allowed.
-    return ""
+    session = HTMLSession()
+    try:
+        # Get the URL with a 15-second timeout
+        response = session.get(url, timeout=15)
+        # Render the JavaScript and dynamic HTML. Note:
+        # render() is asynchronous under the hood, hence it needs an event loop.
+        response.html.render(timeout=15, sleep=1)
+        return response.html.html
+    except Exception as e:
+        logging.error(f"Failed rendering {url}: {e}")
+        return ""
 
 def save_to_s3(url, html, text):
     """
@@ -76,11 +49,9 @@ def save_to_s3(url, html, text):
     """
     bucket_name = 'crawled-content-team29'
     s3 = boto3.client('s3', region_name='eu-north-1')
-
-    # Generate a safe file name by hashing the URL
-    safe_url = quote_plus(url)  # Encodes unsafe characters into URL-safe form
+    # Generate a safe file name by encoding the URL
+    safe_url = quote_plus(url)
     base_key = f"{safe_url}/"
-
     try:
         s3.put_object(Bucket=bucket_name, Key=base_key + "raw.html", Body=html, ContentType='text/html')
         s3.put_object(Bucket=bucket_name, Key=base_key + "content.txt", Body=text, ContentType='text/plain')
@@ -88,11 +59,9 @@ def save_to_s3(url, html, text):
     except Exception as e:
         logging.error(f"Failed to save {url} to S3: {e}")
 
-
 def is_allowed_by_robots(url):
     parsed_url = urlparse(url)
     robots_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
-
     rp = RobotFileParser()
     try:
         rp.set_url(robots_url)
@@ -102,20 +71,17 @@ def is_allowed_by_robots(url):
         logging.warning(f"Failed to fetch robots.txt from {robots_url}: {e}")
         return True
 
-
 def send_task_to_queue(task_data, groupID, batch_size=500):
     if not isinstance(task_data, list):
         task_data = list(task_data)
-
     for i in range(0, len(task_data), batch_size):
         batch = task_data[i:i + batch_size]
         message_body = json.dumps(batch)
         crawled_Queue.send_message(
             MessageBody=message_body,
-            MessageGroupId=str(uuid.uuid4()),
+            MessageGroupId=str(uuid.uuid4())
         )
         logging.info(f"Sent batch of {len(batch)} URLs to SQS.")
-
 
 def fetch_task_from_queue():
     messages = toCrawl_queue.receive_messages(
@@ -123,7 +89,6 @@ def fetch_task_from_queue():
         WaitTimeSeconds=10,
         VisibilityTimeout=30
     )
-
     if messages:
         message = messages[0]
         task_data = json.loads(message.body)
@@ -133,7 +98,6 @@ def fetch_task_from_queue():
         return task_data
     else:
         return None
-
 
 def send_content_to_indexer(content):
     try:
@@ -146,8 +110,6 @@ def send_content_to_indexer(content):
         logging.error(f"Failed to send content to indexer: {e}")
 
 def crawler_process():
-
-    # Initialize the shutdown queue
     shutdown_queue = sqs.get_queue_by_name(QueueName='shutdown.fifo')
 
     total_urls_processed = 0
@@ -155,14 +117,14 @@ def crawler_process():
     skipped_due_to_robots = 0
 
     printed = False
-    
+
     while True:
-        url = fetch_task_from_queue()
-        if url is None:
+        task = fetch_task_from_queue()
+        if task is None:
             if not printed:
                 logging.info("Task queue is empty. Polling indefinitely.")
                 printed = True
-            # No task available, so poll the shutdown queue
+            # Poll the shutdown queue if no tasks are available
             shutdown_msgs = shutdown_queue.receive_messages(
                 MaxNumberOfMessages=1,
                 WaitTimeSeconds=2
@@ -171,17 +133,16 @@ def crawler_process():
                 shutdown_data = json.loads(shutdown_msgs[0].body)
                 if shutdown_data.get("status") == "finished":
                     logging.info("Shutdown message received on shutdown.fifo. Exiting crawler.")
-                    break  # Exit the loop (do NOT delete the shutdown message)
-            # Delay to prevent rapid polling
+                    break
             time.sleep(2)
-            continue  # Continue polling for tasks
-        
+            continue
+
         printed = False
 
         try:
-            url_to_crawl = url['url']
-            current_depth = url.get('current_depth', 0)
-            max_depth = url.get('max_depth', 0)
+            url_to_crawl = task['url']
+            current_depth = task.get('current_depth', 0)
+            max_depth = task.get('max_depth', 0)
 
             if not is_allowed_by_robots(url_to_crawl):
                 logging.info(f"Crawler: Skipping {url_to_crawl} due to robots.txt rules.")
@@ -189,16 +150,13 @@ def crawler_process():
                 total_urls_processed += 1
                 continue
 
-            try:
-                html = fetch_rendered_html(url_to_crawl)
-            except Exception as e:
-                logging.error(f"Crawler failed fetching {url_to_crawl}: {e}")
+            html = fetch_rendered_html(url_to_crawl)
+            if not html:
                 error_count += 1
                 total_urls_processed += 1
                 continue
 
             soup = BeautifulSoup(html, "html.parser")
-
             extracted_urls = set()
             for link in soup.find_all('a', href=True):
                 full_url = urljoin(url_to_crawl, link['href'])
@@ -209,30 +167,24 @@ def crawler_process():
                 script.decompose()
 
             text = soup.get_text(separator=' ', strip=True)
-
-            # Save to S3 for persistence
             save_to_s3(url_to_crawl, html, text)
 
             logging.info(f"Crawler: Extracted {len(extracted_urls)} URLs, {len(text)} characters of text.")
             print(f"Crawler done. Found {len(extracted_urls)} links.")
-
             logging.info(f"Crawler crawled {url_to_crawl}, extracted {len(extracted_urls)} URLs.")
 
             if current_depth < max_depth:
-                # Create a new task for each extracted URL with incremented depth.
                 new_tasks = [{"url": link, "current_depth": current_depth + 1, "max_depth": max_depth} for link in extracted_urls]
                 send_task_to_queue(new_tasks, "crawled_URLs")
             else:
                 logging.info(f"Crawler: Reached max depth for {url_to_crawl}. Not sending further URL tasks.")
-                # After finishing all tasks, send a "done" message.
                 sqs_resource = boto3.resource('sqs', region_name='eu-north-1')
                 crawler_done_queue = sqs_resource.get_queue_by_name(QueueName='crawler_completion.fifo')
                 done_message = {"status": "done"}
                 crawler_done_queue.send_message(MessageBody=json.dumps(done_message), MessageGroupId=str(uuid.uuid4()))
-                logging.info(f"Crawler finished processing and sent done message.")
+                logging.info("Crawler finished processing and sent done message.")
 
             total_urls_processed += 1
-
             message = {
                 "url": url_to_crawl,
                 "html": html,
@@ -240,13 +192,11 @@ def crawler_process():
             }
             send_content_to_indexer(message)
 
-
         except Exception as e:
             logging.error(f"Crawler error crawling {url_to_crawl}: {e}")
             error_count += 1
             total_urls_processed += 1
 
-    # Final summary
     error_percentage = (error_count / total_urls_processed) * 100 if total_urls_processed else 0
     summary_message = (
         f"Crawler finished. "
@@ -254,20 +204,14 @@ def crawler_process():
         f"Errors: {error_count} ({error_percentage:.2f}%), "
         f"Skipped (robots.txt): {skipped_due_to_robots}"
     )
-
     logging.info(summary_message)
 
-
 if __name__ == '__main__':
-
     logging.info("Crawler node started")
-
     threads = []
-    
     for i in range(2):
         t = threading.Thread(target=crawler_process, name=f"Crawler-Thread-{i+1}")
         t.start()
         threads.append(t)
-    
     for t in threads:
         t.join()
