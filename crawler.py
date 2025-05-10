@@ -35,15 +35,18 @@ def fetch_rendered_html(url):
     firefox_options.page_load_strategy = "eager"
 
     # Create a Firefox profile and disable image loading
-    profile = webdriver.FirefoxProfile()
-    profile.set_preference("permissions.default.image", 2)  # 2 = Block images
-    profile.update_preferences()
+    firefox_options = FirefoxOptions()
+    firefox_options.add_argument("--headless")
+    firefox_options.page_load_strategy = "eager"
+    firefox_options.set_preference("permissions.default.image", 2)  # Block images
+
+    
 
     max_attempts = 1  # Total number of attempts to fetch the page
     for attempt in range(max_attempts):
         driver = None  # Ensure a fresh driver each time
         try:
-            driver = webdriver.Firefox(options=firefox_options, firefox_profile=profile)
+            driver = webdriver.Firefox(options=firefox_options)
             driver.set_page_load_timeout(15)  # Lower page load timeout
             driver.get(url)
             
