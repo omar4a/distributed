@@ -115,7 +115,7 @@ def search_query_listener():
             
             # If this query was already processed, skip processing
             if query == last_query:
-                time.sleep(1)
+                time.sleep(2)
                 continue
             last_query = query
             
@@ -142,7 +142,7 @@ def search_query_listener():
                 MessageGroupId=str(uuid.uuid4())
             )
         else:
-            time.sleep(1)
+            time.sleep(3)
 
 def indexer_process():
 

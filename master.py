@@ -4,8 +4,8 @@ import boto3
 import json
 import threading
 import uuid
-import botocore
 from queue import Queue
+import botocore
 
 # Configure logging 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Master - %(levelname)s - %(message)s')
@@ -148,48 +148,55 @@ def wait_for_indexing_completion():
     prompt_and_delegate_search()
 
 def poll_for_search_results():
-    search_results_queue = sqs.get_queue_by_name(QueueName='search_results.fifo')
-    logging.info("Polling for search results...")
+    logging.info("Polling for search results and aggregating responses...")
     
-    timeout = 10  # Example timeout for polling
+    aggregated_results = []
+    timeout = 10
     start_time = time.time()
-    last_receipt_handle = None  # Track the latest receipt handle
-
-    while time.time() - start_time < timeout:
-        messages = search_results_queue.receive_messages(
-            MaxNumberOfMessages=1,
-            WaitTimeSeconds=10,
-            VisibilityTimeout=0  # Allow multiple indexers to consume
-        )
-        
+    result_found = False
+    last_receipt_handle = None
+    
+    while time.time() - start_time < timeout and not result_found:
+        messages = search_results_queue.receive_messages(MaxNumberOfMessages=10, WaitTimeSeconds=3)
         if messages:
-            msg = messages[0]
-            last_receipt_handle = msg.receipt_handle  # Store latest receipt handle
-            
-            results = json.loads(msg.body)
-            logging.info(f"Search Results: {results}")
-            
-            print("Search Results:")
-            if "error" in results:
-                print(results["error"])
-            else:
-                for line in results.get("results", []):
-                    print(line)
-            
-            time.sleep(5)  # Allow other indexers to process it
-            
-        else:
-            time.sleep(1)
-
-    # Delete the last retrieved message only after all indexers have processed it
+            for msg in messages:
+                result_data = json.loads(msg.body)
+                aggregated_results.append((msg, result_data))
+                last_receipt_handle = msg.receipt_handle  # Store latest receipt handle
+        time.sleep(1)
+    
+    # Determine the final result based on aggregated responses.
+    final_result = None
+    for (_, result_data) in aggregated_results:
+        if result_data.get("results") != "No results found.":
+            final_result = result_data
+            result_found = True
+            break
+    if final_result is None:
+        final_result = {"results": "No results found."}
+    
+    logging.info(f"Final Aggregated Search Results: {final_result}")
+    print("Search Results:")
+    if "error" in final_result:
+        print(final_result["error"])
+    elif isinstance(final_result.get("results"), list):
+        for line in final_result.get("results"):
+            print(line)
+    else:
+        print(final_result.get("results"))
+    
+    # Delete all received search result messages.
+    for (msg, _) in aggregated_results:
+        msg.delete()
+    
     if last_receipt_handle:
         try:
             search_results_queue.delete_messages(
                 Entries=[{"Id": "1", "ReceiptHandle": last_receipt_handle}]
             )
-            logging.info(f"Deleted last search query message: {last_receipt_handle}")
         except botocore.exceptions.ClientError as e:
             logging.error(f"Failed to delete last search query message: {e}")
+
 
 def master_process():
 
