@@ -4,8 +4,8 @@ import boto3
 import json
 import threading
 import uuid
+import botocore
 from queue import Queue
-from boto3 import botocore
 
 # Configure logging 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - Master - %(levelname)s - %(message)s')
