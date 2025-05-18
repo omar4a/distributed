@@ -181,7 +181,7 @@ def indexer_process():
                 start_time = time.time()
             else:
                 elapsed = time.time() - start_time
-                if elapsed >= 10:
+                if elapsed >= 5:
                     # Check if crawler_completion.fifo has a done message
                     crawler_done_queue = sqs.get_queue_by_name(QueueName='crawler_completion.fifo')
                     done_messages = crawler_done_queue.receive_messages(
