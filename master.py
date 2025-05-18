@@ -164,14 +164,17 @@ def poll_for_search_results():
         time.sleep(1)
     
     # Determine the final result based on aggregated responses.
-    final_result = None
+    final_results = []
     for (_, result_data) in aggregated_results:
         if result_data.get("results") != "No results found.":
-            final_result = result_data
-            result_found = True
-            break
-    if final_result is None:
+            if isinstance(result_data.get("results"), list):
+                final_results.extend(result_data["results"])
+            else:
+                final_results.append(result_data.get("results"))
+    if not final_results:
         final_result = {"results": "No results found."}
+    else:
+        final_result = {"results": final_results}
     
     print("Search Results:")
     if "error" in final_result:
